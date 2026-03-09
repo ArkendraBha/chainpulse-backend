@@ -135,3 +135,17 @@ def latest_summary():
 def manual_update():
     update_market()
     return {"status": "Market updated"}
+@app.get("/history")
+def sentiment_history():
+    db = SessionLocal()
+    records = db.query(MarketSummary).order_by(MarketSummary.id.desc()).limit(30).all()
+    db.close()
+
+    return [
+        {
+            "score": r.sentiment_score,
+            "label": r.sentiment_label,
+            "timestamp": r.created_at
+        }
+        for r in records
+    ]
