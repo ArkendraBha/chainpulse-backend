@@ -60,9 +60,8 @@ app.add_middleware(
 
 # Fetch crypto news (CryptoPanic removed)
 def fetch_news():
-    # External news source removed to prevent 502 errors
-    # Returning empty list preserves existing logic
-    return []
+    # External news removed permanently
+    return None
 
 # Generate AI summary
 def generate_summary(headlines):
@@ -98,30 +97,35 @@ Headlines:
 def update_market():
     db = SessionLocal()
 
-    headlines = fetch_news()
-    if not headlines:
+    try:
+        headlines = fetch_news()
+
+        if headlines:
+            result = generate_summary(headlines)
+        else:
+            # Fallback AI generation without external API
+            result = {
+                "sentiment_score": 0,
+                "sentiment_label": "Neutral",
+                "confidence": 0.5,
+                "summary": "Automated system update. No external news source connected."
+            }
+
+        summary = MarketSummary(
+            sentiment_score=result["sentiment_score"],
+            sentiment_label=result["sentiment_label"],
+            confidence=result["confidence"],
+            summary=result["summary"]
+        )
+
+        db.add(summary)
+        db.commit()
+
+    except Exception as e:
+        print("Update error:", e)
+
+    finally:
         db.close()
-        return
-
-    result = generate_summary(headlines)
-
-    summary = MarketSummary(
-        sentiment_score=result["sentiment_score"],
-        sentiment_label=result["sentiment_label"],
-        confidence=result["confidence"],
-        summary=result["summary"]
-    )
-
-    db.add(summary)
-    db.commit()
-    db.close()
-
-# Run every hour
-scheduler = BackgroundScheduler()
-scheduler.add_job(update_market, "interval", hours=1)
-scheduler.start()
-
-@app.get("/latest")
 def latest_summary():
     db = SessionLocal()
     data = db.query(MarketSummary).order_by(MarketSummary.id.desc()).first()
