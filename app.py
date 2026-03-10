@@ -1,3 +1,4 @@
+print("CHAINPULSE BACKEND LOADED")
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
 import os
