@@ -212,3 +212,13 @@ async def stripe_webhook(request: Request):
             db.close()
 
     return {"status": "success"}
+
+@app.get("/check-subscription")
+def check_subscription(email: str):
+    db = SessionLocal()
+    user = db.query(User).filter(User.email == email).first()
+    db.close()
+
+    if user and user.subscription_status == "active":
+        return {"isPro": True}
+    return {"isPro": False}
