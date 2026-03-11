@@ -136,6 +136,22 @@ def send_email(to_email, subject, body):
             "html": body,
         },
     )
+def generate_weekly_report(db, coin="BTC"):
+    latest = db.query(MarketSummary)\
+        .filter(MarketSummary.coin == coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .first()
+
+    if not latest:
+        return None
+
+    return f"""
+    <h2>Weekly Regime Report — {coin}</h2>
+    <p><strong>Current Regime:</strong> {latest.label}</p>
+    <p><strong>Score:</strong> {latest.score}</p>
+    <p><strong>Coherence:</strong> {latest.coherence}%</p>
+    <p>Deploy size according to exposure model.</p>
+    """
 
 def check_and_send_alerts(db, coin):
     latest = db.query(MarketSummary)\
@@ -210,3 +226,22 @@ def enable_alerts(email: str):
         db.commit()
     db.close()
     return {"alerts_enabled": True}
+@app.get("/weekly-report")
+def weekly_report():
+    db = SessionLocal()
+
+    users = db.query(User)\
+        .filter(User.subscription_status == "active")\
+        .all()
+
+    for user in users:
+        report_html = generate_weekly_report(db)
+
+        send_email(
+            user.email,
+            "ChainPulse Weekly Regime Report",
+            report_html
+        )
+
+    db.close()
+    return {"status": "Weekly reports sent"}
