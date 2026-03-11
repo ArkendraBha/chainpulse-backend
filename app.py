@@ -245,3 +245,34 @@ def weekly_report():
 
     db.close()
     return {"status": "Weekly reports sent"}
+
+@app.get("/survival-curve")
+def survival_curve(coin: str = "BTC"):
+    db = SessionLocal()
+
+    durations = regime_durations(db, coin)
+    db.close()
+
+    if not durations:
+        return {"data": []}
+
+    max_duration = int(max(durations))
+    curve = []
+
+    for hour in range(0, max_duration + 1):
+        survivors = [d for d in durations if d > hour]
+        survival_prob = (len(survivors) / len(durations)) * 100
+
+        hazard = 0
+        if hour > 0:
+            exited = [d for d in durations if hour-1 < d <= hour]
+            if len(survivors) > 0:
+                hazard = (len(exited) / len(survivors)) * 100
+
+        curve.append({
+            "hour": hour,
+            "survival": round(survival_prob, 2),
+            "hazard": round(hazard, 2)
+        })
+
+    return {"data": curve}
