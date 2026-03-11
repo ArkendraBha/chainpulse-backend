@@ -302,6 +302,20 @@ def statistics(coin: str="BTC"):
         "current_regime_age_hours": age
     }
 
+@app.post("/create-checkout-session")
+def create_checkout_session():
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="subscription",
+        line_items=[{
+            "price": STRIPE_PRICE_ID,
+            "quantity": 1,
+        }],
+        success_url="https://chainpulse.pro/app?success=true",
+        cancel_url="https://chainpulse.pro/pricing",
+    )
+    return {"url": session.url}
+
 @app.get("/update-now")
 def update_now(coin: str="BTC"):
     update_market(coin)
