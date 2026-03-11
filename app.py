@@ -127,6 +127,7 @@ def update_market():
     finally:
         db.close()
 @app.get("/latest")
+def latest_summary(coin: str = "BTC"):
 def latest_summary():
     db = SessionLocal()
     data = db.query(MarketSummary).order_by(MarketSummary.id.desc()).first()
@@ -149,6 +150,7 @@ def manual_update():
     return {"status": "Market updated"}
 
 @app.get("/history")
+def sentiment_history(coin: str = "BTC"):
 def sentiment_history():
     db = SessionLocal()
     records = db.query(MarketSummary).order_by(MarketSummary.id.desc()).limit(30).all()
