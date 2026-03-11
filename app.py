@@ -1,30 +1,35 @@
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Request
+from fastapi import FastAPI, Request, HTTPException
 import os
-import json
 import datetime
 import stripe
+import math
+import requests
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime
 from sqlalchemy.orm import sessionmaker, declarative_base
-from openai import OpenAI
-from apscheduler.schedulers.background import BackgroundScheduler
 
-# Load environment variables
+# -----------------------
+# ENV SETUP
+# -----------------------
+
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
 
-stripe.api_key = STRIPE_SECRET_KEY
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not set")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
-# Database setup
+# -----------------------
+# DATABASE (REBUILT CLEAN)
+# -----------------------
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -33,10 +38,11 @@ class MarketSummary(Base):
     __tablename__ = "market_summary"
 
     id = Column(Integer, primary_key=True)
-    sentiment_score = Column(Float)
-    sentiment_label = Column(String)
-    confidence = Column(Float)
-    summary = Column(Text)
+    coin = Column(String)
+    score = Column(Float)
+    label = Column(String)
+    coherence = Column(Float)
+    strength_bucket = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class User(Base):
@@ -46,172 +52,260 @@ class User(Base):
     email = Column(String, unique=True)
     subscription_status = Column(String, default="inactive")
 
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
+
+# -----------------------
+# APP INIT
+# -----------------------
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Fetch crypto news (CryptoPanic removed)
-def fetch_news():
-    # External news removed permanently
-    return None
+# -----------------------
+# BINANCE PRICE DATA
+# -----------------------
 
-# Generate AI summary
-def generate_summary(headlines):
+def get_prices(symbol, interval, limit=100):
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        r = requests.get(url, params=params, timeout=5)
+        data = r.json()
+        return [float(c[4]) for c in data]
+    except:
+        return []
 
-    formatted = "\n".join(headlines)
+# -----------------------
+# REGIME ENGINE
+# -----------------------
 
-    prompt = f"""
-Return ONLY valid JSON:
+def momentum(prices, period):
+    if len(prices) < period:
+        return 0
+    return prices[-1] - prices[-period]
 
-{{
-"sentiment_score": -100 to 100,
-"sentiment_label": "Bullish/Bearish/Neutral",
-"confidence": 0-1,
-"summary": "3 sentence professional crypto market overview"
-}}
+def volatility(prices, period=20):
+    if len(prices) < period:
+        return 0
+    subset = prices[-period:]
+    mean = sum(subset) / len(subset)
+    var = sum((p - mean) ** 2 for p in subset) / len(subset)
+    return math.sqrt(var)
 
-Headlines:
-{formatted}
-"""
+def timeframe_score(symbol):
+    prices = get_prices(symbol, "1h")
+    if not prices:
+        return 0
 
-    response = openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": "You are a professional crypto market analyst."},
-            {"role": "user", "content": prompt}
-        ]
+    mom_4 = momentum(prices, 4)
+    mom_24 = momentum(prices, 24)
+    vol = volatility(prices)
+
+    score = (0.5 * mom_4 + 0.5 * mom_24 - 0.3 * vol)
+    return max(-100, min(100, score))
+
+def classify(score):
+    if score > 35: return "Strong Risk-On"
+    if score > 15: return "Risk-On"
+    if score < -35: return "Strong Risk-Off"
+    if score < -15: return "Risk-Off"
+    return "Neutral"
+
+def strength_bucket(score):
+    if abs(score) > 50: return "Extreme"
+    if abs(score) > 30: return "High"
+    if abs(score) > 15: return "Moderate"
+    return "Weak"
+
+# -----------------------
+# UPDATE ENGINE
+# -----------------------
+
+def update_market(coin):
+    db = SessionLocal()
+    symbol = f"{coin}USDT"
+
+    score = timeframe_score(symbol)
+    label = classify(score)
+
+    # coherence proxy: absolute strength normalized
+    coherence = min(100, abs(score))
+
+    entry = MarketSummary(
+        coin=coin,
+        score=score,
+        label=label,
+        coherence=coherence,
+        strength_bucket=strength_bucket(score)
     )
 
-    return json.loads(response.choices[0].message.content)
-
-# Update market summary
-def update_market():
-    db = SessionLocal()
-
-    try:
-        headlines = fetch_news()
-
-        if headlines:
-            result = generate_summary(headlines)
-        else:
-            # Fallback AI generation without external API
-            result = {
-                "sentiment_score": 0,
-                "sentiment_label": "Neutral",
-                "confidence": 0.5,
-                "summary": "Automated system update. No external news source connected."
-            }
-
-        summary = MarketSummary(
-            sentiment_score=result["sentiment_score"],
-            sentiment_label=result["sentiment_label"],
-            confidence=result["confidence"],
-            summary=result["summary"]
-        )
-
-        db.add(summary)
-        db.commit()
-
-    except Exception as e:
-        print("Update error:", e)
-
-    finally:
-        db.close()
-@app.get("/latest")
-def latest_summary(coin: str = "BTC"):
-    db = SessionLocal()
-    data = db.query(MarketSummary).order_by(MarketSummary.id.desc()).first()
+    db.add(entry)
+    db.commit()
     db.close()
 
-    if not data:
-        return {"message": "No data yet"}
+# -----------------------
+# STATISTICS
+# -----------------------
 
-    return {
-        "score": data.sentiment_score,
-        "label": data.sentiment_label,
-        "confidence": data.confidence,
-        "summary": data.summary,
-        "timestamp": data.created_at
-    }
+def get_history(db, coin):
+    return db.query(MarketSummary)\
+        .filter(MarketSummary.coin == coin)\
+        .order_by(MarketSummary.created_at.asc())\
+        .all()
+
+def regime_durations(db, coin):
+    records = get_history(db, coin)
+    durations = []
+    current = None
+    start = None
+
+    for r in records:
+        if r.label != current:
+            if current:
+                d = (r.created_at - start).total_seconds()/3600
+                durations.append(d)
+            current = r.label
+            start = r.created_at
+
+    return durations
+
+def current_age(db, coin):
+    records = db.query(MarketSummary)\
+        .filter(MarketSummary.coin == coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .all()
+
+    if not records:
+        return 0
+
+    latest = records[0].label
+    start = records[0].created_at
+
+    for r in records:
+        if r.label != latest:
+            break
+        start = r.created_at
+
+    return (datetime.datetime.utcnow()-start).total_seconds()/3600
+
+def survival_probability(db, coin):
+    durations = regime_durations(db, coin)
+    age = current_age(db, coin)
+
+    if not durations:
+        return 0
+
+    longer = [d for d in durations if d > age]
+    return round((len(longer)/len(durations))*100,2)
+
+def hazard_rate(db, coin):
+    durations = regime_durations(db, coin)
+    age = current_age(db, coin)
+
+    if not durations:
+        return 0
+
+    avg = sum(durations)/len(durations)
+    return round(min(100,(age/(avg+0.01))*100),2)
+
+def percentile_rank(db, coin, current_score):
+    scores = [r.score for r in get_history(db, coin)]
+    if not scores:
+        return 0
+    lower = [s for s in scores if s < current_score]
+    return round((len(lower)/len(scores))*100,2)
+
+def exposure_recommendation(score, survival, hazard, coherence):
+    base = abs(score)/100
+    persistence_factor = survival/100
+    hazard_penalty = hazard/100
+
+    exposure = base * persistence_factor * (1-hazard_penalty)
+    exposure *= (coherence/100)
+
+    return round(min(100, exposure*100),2)
+
+def shift_risk(hazard, coherence):
+    risk = (hazard*0.6) + ((100-coherence)*0.4)
+    return round(min(100,risk),2)
+
+# -----------------------
+# ROUTES
+# -----------------------
+
+@app.get("/")
+def root():
+    return {"status": "ChainPulse Institutional Backend Live"}
 
 @app.get("/update-now")
-def manual_update():
-    update_market()
-    return {"status": "Market updated"}
+def manual_update(coin: str = "BTC"):
+    update_market(coin)
+    return {"status": f"{coin} updated"}
 
-@app.get("/history")
-def sentiment_history(coin: str = "BTC"):
+@app.get("/latest")
+def latest(coin: str="BTC"):
     db = SessionLocal()
-    records = db.query(MarketSummary).order_by(MarketSummary.id.desc()).limit(30).all()
+    r = db.query(MarketSummary)\
+        .filter(MarketSummary.coin==coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .first()
     db.close()
 
-    return [
-        {
-            "score": r.sentiment_score,
-            "label": r.sentiment_label,
-            "timestamp": r.created_at
+    if not r:
+        return {"message":"No data yet"}
+
+    return {
+        "score": r.score,
+        "label": r.label,
+        "coherence": r.coherence,
+        "strength_bucket": r.strength_bucket,
+        "timestamp": r.created_at
+    }
+
+@app.get("/statistics")
+def statistics(coin: str="BTC", email: str=None):
+    db = SessionLocal()
+    latest = db.query(MarketSummary)\
+        .filter(MarketSummary.coin==coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .first()
+
+    if not latest:
+        db.close()
+        return {"message":"No data"}
+
+    survival = survival_probability(db, coin)
+    hazard = hazard_rate(db, coin)
+    percentile = percentile_rank(db, coin, latest.score)
+    exposure = exposure_recommendation(latest.score, survival, hazard, latest.coherence)
+    shift = shift_risk(hazard, latest.coherence)
+
+    is_pro=False
+    if email:
+        user = db.query(User).filter(User.email==email).first()
+        if user and user.subscription_status=="active":
+            is_pro=True
+
+    db.close()
+
+    if not is_pro:
+        return {
+            "exposure_recommendation_percent": exposure,
+            "pro_required": True
         }
-        for r in records
-    ]
 
-@app.post("/create-checkout-session")
-def create_checkout_session():
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        mode="subscription",
-        line_items=[{
-            "price": STRIPE_PRICE_ID,
-            "quantity": 1,
-        }],
-        success_url="https://chainpulse.pro?success=true",
-        cancel_url="https://chainpulse.pro?canceled=true",
-    )
-    return {"url": session.url}
-
-@app.post("/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    event = stripe.Webhook.construct_event(
-        payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
-    )
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        email = session.get("customer_details", {}).get("email")
-
-        if email:
-            db = SessionLocal()
-            user = db.query(User).filter(User.email == email).first()
-
-            if not user:
-                user = User(email=email, subscription_status="active")
-                db.add(user)
-            else:
-                user.subscription_status = "active"
-
-            db.commit()
-            db.close()
-
-    return {"status": "success"}
-
-@app.get("/check-subscription")
-def check_subscription(email: str):
-    db = SessionLocal()
-    user = db.query(User).filter(User.email == email).first()
-    db.close()
-
-    if user and user.subscription_status == "active":
-        return {"isPro": True}
-
-    return {"isPro": False}
+    return {
+        "survival_probability_percent": survival,
+        "hazard_percent": hazard,
+        "percentile_rank_percent": percentile,
+        "exposure_recommendation_percent": exposure,
+        "regime_shift_risk_percent": shift
+    }
