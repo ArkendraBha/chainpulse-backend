@@ -1,4 +1,3 @@
-print("CHAINPULSE BACKEND LOADED")
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
 import os
@@ -127,6 +126,7 @@ def update_market():
 
     finally:
         db.close()
+@app.get("/latest")
 def latest_summary():
     db = SessionLocal()
     data = db.query(MarketSummary).order_by(MarketSummary.id.desc()).first()
