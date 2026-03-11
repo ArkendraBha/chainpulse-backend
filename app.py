@@ -146,11 +146,11 @@ def generate_weekly_report(db, coin="BTC"):
         return None
 
     return f"""
-    <h2>Weekly Regime Report — {coin}</h2>
+    <h2>Weekly Regime Report - {coin}</h2>
     <p><strong>Current Regime:</strong> {latest.label}</p>
     <p><strong>Score:</strong> {latest.score}</p>
     <p><strong>Coherence:</strong> {latest.coherence}%</p>
-    <p>Deploy size according to exposure model.</p>
+    <p>Adjust exposure based on regime conditions.</p>
     """
 
 def check_and_send_alerts(db, coin):
