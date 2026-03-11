@@ -1,18 +1,17 @@
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, Request
-import os
-import datetime
-import stripe
-import math
-import requests
-
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
+import os
+import datetime
+import requests
+import math
+import stripe
 
-# -----------------------
+# -------------------------
 # ENV SETUP
-# -----------------------
+# -------------------------
 
 load_dotenv()
 
@@ -21,23 +20,19 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL not set")
-
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
-
-# -----------------------
-# DATABASE
-# -----------------------
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
+# -------------------------
+# DATABASE MODELS
+# -------------------------
+
 class MarketSummary(Base):
     __tablename__ = "market_summary"
-
     id = Column(Integer, primary_key=True)
     coin = Column(String)
     score = Column(Float)
@@ -47,7 +42,6 @@ class MarketSummary(Base):
 
 class User(Base):
     __tablename__ = "users"
-
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True)
     subscription_status = Column(String, default="inactive")
@@ -55,10 +49,6 @@ class User(Base):
     last_alert_sent = Column(DateTime)
 
 Base.metadata.create_all(bind=engine)
-
-# -----------------------
-# APP INIT
-# -----------------------
 
 app = FastAPI()
 
@@ -70,9 +60,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------
-# BINANCE DATA
-# -----------------------
+# -------------------------
+# MARKET DATA
+# -------------------------
 
 def get_prices(symbol, interval="1h", limit=100):
     url = "https://api.binance.com/api/v3/klines"
@@ -98,8 +88,7 @@ def volatility(prices, period=20):
     return math.sqrt(var)
 
 def calculate_score(coin):
-    symbol = f"{coin}USDT"
-    prices = get_prices(symbol)
+    prices = get_prices(f"{coin}USDT")
     if not prices:
         return 0
     mom4 = momentum(prices, 4)
@@ -115,88 +104,11 @@ def classify(score):
     if score < -15: return "Risk-Off"
     return "Neutral"
 
-# -----------------------
-# ALERT ENGINE
-# -----------------------
+# -------------------------
+# UPDATE ENGINE
+# -------------------------
 
-def send_email(to_email, subject, body):
-    if not RESEND_API_KEY:
-        return
-
-    requests.post(
-        "https://api.resend.com/emails",
-        headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "from": "alerts@chainpulse.pro",
-            "to": [to_email],
-            "subject": subject,
-            "html": body,
-        },
-    )
-def generate_weekly_report(db, coin="BTC"):
-    latest = db.query(MarketSummary)\
-        .filter(MarketSummary.coin == coin)\
-        .order_by(MarketSummary.created_at.desc())\
-        .first()
-
-    if not latest:
-        return None
-
-    return f"""
-    <h2>Weekly Regime Report - {coin}</h2>
-    <p><strong>Current Regime:</strong> {latest.label}</p>
-    <p><strong>Score:</strong> {latest.score}</p>
-    <p><strong>Coherence:</strong> {latest.coherence}%</p>
-    <p>Adjust exposure based on regime conditions.</p>
-    """
-
-def check_and_send_alerts(db, coin):
-    latest = db.query(MarketSummary)\
-        .filter(MarketSummary.coin == coin)\
-        .order_by(MarketSummary.created_at.desc())\
-        .first()
-
-    if not latest:
-        return
-
-    shift_risk = abs(latest.score)
-
-    if shift_risk < 70:
-        return
-
-    users = db.query(User)\
-        .filter(User.alerts_enabled == True)\
-        .all()
-
-    for user in users:
-        if user.last_alert_sent and \
-           (datetime.datetime.utcnow() - user.last_alert_sent).total_seconds() < 86400:
-            continue
-
-        send_email(
-            user.email,
-            "ChainPulse Regime Shift Alert",
-            f"""
-            <h2>Elevated Regime Shift Risk Detected</h2>
-            <p>Current Regime: {latest.label}</p>
-            <p>Score: {latest.score}</p>
-            <p>Consider reducing exposure.</p>
-            """
-        )
-
-        user.last_alert_sent = datetime.datetime.utcnow()
-
-    db.commit()
-
-# -----------------------
-# ROUTES
-# -----------------------
-
-@app.get("/update-now")
-def update_now(coin: str = "BTC"):
+def update_market(coin):
     db = SessionLocal()
     score = calculate_score(coin)
     label = classify(score)
@@ -210,69 +122,180 @@ def update_now(coin: str = "BTC"):
 
     db.add(entry)
     db.commit()
-
-    check_and_send_alerts(db, coin)
-
     db.close()
 
-    return {"status": "Updated & Alerts Checked"}
+# -------------------------
+# STATISTICS ENGINE
+# -------------------------
 
-@app.post("/enable-alerts")
-def enable_alerts(email: str):
-    db = SessionLocal()
-    user = db.query(User).filter(User.email == email).first()
-    if user:
-        user.alerts_enabled = True
-        db.commit()
-    db.close()
-    return {"alerts_enabled": True}
-@app.get("/weekly-report")
-def weekly_report():
-    db = SessionLocal()
-
-    users = db.query(User)\
-        .filter(User.subscription_status == "active")\
+def get_history(db, coin):
+    return db.query(MarketSummary)\
+        .filter(MarketSummary.coin == coin)\
+        .order_by(MarketSummary.created_at.asc())\
         .all()
 
-    for user in users:
-        report_html = generate_weekly_report(db)
+def regime_durations(db, coin):
+    records = get_history(db, coin)
+    durations = []
+    current = None
+    start = None
 
-        send_email(
-            user.email,
-            "ChainPulse Weekly Regime Report",
-            report_html
-        )
+    for r in records:
+        if r.label != current:
+            if current:
+                d = (r.created_at - start).total_seconds()/3600
+                durations.append(d)
+            current = r.label
+            start = r.created_at
 
-    db.close()
-    return {"status": "Weekly reports sent"}
+    return durations
+
+def current_age(db, coin):
+    records = db.query(MarketSummary)\
+        .filter(MarketSummary.coin == coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .all()
+
+    if not records:
+        return 0
+
+    latest_label = records[0].label
+    start_time = records[0].created_at
+
+    for r in records:
+        if r.label != latest_label:
+            break
+        start_time = r.created_at
+
+    return (datetime.datetime.utcnow()-start_time).total_seconds()/3600
+
+def survival_probability(db, coin):
+    durations = regime_durations(db, coin)
+    age = current_age(db, coin)
+
+    if len(durations) < 5:
+        return round(max(40, 100 - age*5), 2)
+
+    longer = [d for d in durations if d > age]
+    return round((len(longer)/len(durations))*100,2)
+
+def hazard_rate(db, coin):
+    durations = regime_durations(db, coin)
+    age = current_age(db, coin)
+
+    if len(durations) < 5:
+        return round(min(60, age*6),2)
+
+    avg = sum(durations)/len(durations)
+    return round(min(100,(age/(avg+0.01))*100),2)
+
+def percentile_rank(db, coin, current_score):
+    scores = [r.score for r in get_history(db, coin)]
+    if len(scores) < 5:
+        return round(50 + current_score/2,2)
+    lower = [s for s in scores if s < current_score]
+    return round((len(lower)/len(scores))*100,2)
+
+def exposure_recommendation(score, survival, hazard, coherence):
+    base = abs(score)/100
+    persistence_factor = survival/100
+    hazard_penalty = hazard/100
+    exposure = base * persistence_factor * (1-hazard_penalty)
+    exposure *= (coherence/100)
+    return round(min(100, exposure*100),2)
+
+# -------------------------
+# SURVIVAL CURVE
+# -------------------------
 
 @app.get("/survival-curve")
-def survival_curve(coin: str = "BTC"):
+def survival_curve(coin: str="BTC"):
     db = SessionLocal()
-
     durations = regime_durations(db, coin)
     db.close()
 
-    if not durations:
-        return {"data": []}
+    if len(durations) < 5:
+        dummy = []
+        for h in range(0, 25):
+            dummy.append({
+                "hour": h,
+                "survival": max(0, 100 - h*4),
+                "hazard": min(100, h*4)
+            })
+        return {"data": dummy}
 
     max_duration = int(max(durations))
     curve = []
 
-    for hour in range(0, max_duration + 1):
+    for hour in range(0, max_duration+1):
         survivors = [d for d in durations if d > hour]
-        survival_prob = (len(survivors) / len(durations)) * 100
-
+        survival = (len(survivors)/len(durations))*100
         hazard = 0
-        if hour > 0:
+        if hour > 0 and len(survivors)>0:
             exited = [d for d in durations if hour-1 < d <= hour]
-            if len(survivors) > 0:
-                hazard = (len(exited) / len(survivors)) * 100
+            hazard = (len(exited)/len(survivors))*100
 
         curve.append({
             "hour": hour,
-            "survival": round(survival_prob, 2),
-            "hazard": round(hazard, 2)
+            "survival": round(survival,2),
+            "hazard": round(hazard,2)
         })
 
     return {"data": curve}
+
+# -------------------------
+# ROUTES
+# -------------------------
+
+@app.get("/latest")
+def latest(coin: str="BTC"):
+    db = SessionLocal()
+    r = db.query(MarketSummary)\
+        .filter(MarketSummary.coin==coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .first()
+    db.close()
+
+    if not r:
+        return {"message":"No data yet"}
+
+    return {
+        "score": r.score,
+        "label": r.label,
+        "coherence": r.coherence,
+        "timestamp": r.created_at
+    }
+
+@app.get("/statistics")
+def statistics(coin: str="BTC"):
+    db = SessionLocal()
+    latest = db.query(MarketSummary)\
+        .filter(MarketSummary.coin==coin)\
+        .order_by(MarketSummary.created_at.desc())\
+        .first()
+
+    if not latest:
+        db.close()
+        return {"message":"No data"}
+
+    survival = survival_probability(db, coin)
+    hazard = hazard_rate(db, coin)
+    percentile = percentile_rank(db, coin, latest.score)
+    exposure = exposure_recommendation(latest.score, survival, hazard, latest.coherence)
+    age = current_age(db, coin)
+
+    db.close()
+
+    return {
+        "survival_probability_percent": survival,
+        "hazard_percent": hazard,
+        "percentile_rank_percent": percentile,
+        "exposure_recommendation_percent": exposure,
+        "regime_shift_risk_percent": hazard,
+        "current_regime_age_hours": age
+    }
+
+@app.get("/update-now")
+def update_now(coin: str="BTC"):
+    update_market(coin)
+    return {"status":"updated"}
