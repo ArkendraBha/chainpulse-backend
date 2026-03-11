@@ -91,12 +91,19 @@ def calculate_score(coin):
     prices = get_prices(f"{coin}USDT")
     if not prices:
         return 0
-    mom4 = momentum(prices, 4)
-    mom24 = momentum(prices, 24)
-    vol = volatility(prices)
-    score = 0.5*mom4 + 0.5*mom24 - 0.3*vol
-    return max(-100, min(100, score))
 
+    mom4 = (prices[-1] - prices[-4]) / prices[-4]
+    mom24 = (prices[-1] - prices[-24]) / prices[-24]
+    vol = volatility(prices)
+
+    # Convert to percentage
+    mom4 *= 100
+    mom24 *= 100
+
+    score = 0.6 * mom24 + 0.4 * mom4 - 0.1 * vol
+
+    # Clamp to -100 to 100
+    return max(-100, min(100, score))
 def classify(score):
     if score > 35: return "Strong Risk-On"
     if score > 15: return "Risk-On"
