@@ -204,12 +204,26 @@ def percentile_rank(db, coin, current_score):
     return round((len(lower)/len(scores))*100,2)
 
 def exposure_recommendation(score, survival, hazard, coherence):
-    base = abs(score)/100
-    persistence_factor = survival/100
-    hazard_penalty = hazard/100
-    exposure = base * persistence_factor * (1-hazard_penalty)
-    exposure *= (coherence/100)
-    return round(min(100, exposure*100),2)
+    regime_strength = abs(score)
+
+    # Base exposure determined by regime classification
+    if score > 35:
+        base = 0.8
+    elif score > 15:
+        base = 0.6
+    elif score < -35:
+        base = 0.1
+    elif score < -15:
+        base = 0.25
+    else:
+        base = 0.4
+
+    persistence_factor = survival / 100
+    hazard_penalty = hazard / 100
+
+    exposure = base * persistence_factor * (1 - hazard_penalty*0.7)
+
+    return round(max(5, min(100, exposure * 100)), 2)
 
 # -------------------------
 # SURVIVAL CURVE
