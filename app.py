@@ -204,24 +204,24 @@ def percentile_rank(db, coin, current_score):
     return round((len(lower)/len(scores))*100,2)
 
 def exposure_recommendation(score, survival, hazard, coherence):
-    regime_strength = abs(score)
 
-    # Base exposure determined by regime classification
+    # Regime-based baseline allocation
     if score > 35:
-        base = 0.8
+        base = 0.85
     elif score > 15:
-        base = 0.6
+        base = 0.65
     elif score < -35:
-        base = 0.1
+        base = 0.10
     elif score < -15:
         base = 0.25
     else:
-        base = 0.4
+        base = 0.45
 
-    persistence_factor = survival / 100
+    # Adjust with survival & hazard
+    persistence_boost = survival / 100
     hazard_penalty = hazard / 100
 
-    exposure = base * persistence_factor * (1 - hazard_penalty*0.7)
+    exposure = base * persistence_boost * (1 - hazard_penalty * 0.6)
 
     return round(max(5, min(100, exposure * 100)), 2)
 
@@ -330,7 +330,21 @@ def create_checkout_session():
     )
     return {"url": session.url}
 
+@app.post("/subscribe")
+def subscribe(email: str):
+    db = SessionLocal()
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        user = User(email=email, subscription_status="inactive")
+        db.add(user)
+        db.commit()
+
+    db.close()
+    return {"status": "subscribed"}
+
 @app.get("/update-now")
 def update_now(coin: str="BTC"):
     update_market(coin)
     return {"status":"updated"}
+
