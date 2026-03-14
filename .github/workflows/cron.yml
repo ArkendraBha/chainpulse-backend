@@ -2,16 +2,35 @@ name: ChainPulse Market Cron
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Every hour — update market data
-    - cron: "15 * * * *"  # Every hour at :15 — send alerts
-  workflow_dispatch:       # Allows manual trigger from GitHub UI
+    - cron: "0 * * * *"
+    - cron: "15 * * * *"
+  workflow_dispatch:
 
 jobs:
 
   update-market:
     name: Update Market Data
     runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.schedule == '0 * * * *'
     steps:
+
+      - name: Wake up Render backend
+        run: |
+          echo "Pinging backend to wake from cold start..."
+          curl -s "https://chainpulse-backend-2xok.onrender.com/health" || true
+          echo "Waiting 30 seconds for Render to fully boot..."
+          sleep 30
+
+      - name: Confirm secret is loaded
+        run: |
+          if [ -z "${{ secrets.UPDATE_SECRET }}" ]; then
+            echo "ERROR: UPDATE_SECRET is empty. Check GitHub secrets."
+            exit 1
+          fi
+          echo "Secret loaded OK"
+
       - name: Update all coins
         run: |
           curl -f "https://chainpulse-backend-2xok.onrender.com/update-all?secret=${{ secrets.UPDATE_SECRET }}"
@@ -19,8 +38,17 @@ jobs:
   send-alerts:
     name: Send Regime Alerts
     runs-on: ubuntu-latest
-    needs: update-market    # waits for update to finish first
+    needs: update-market
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.schedule == '15 * * * *'
     steps:
+
+      - name: Wake up Render backend
+        run: |
+          curl -s "https://chainpulse-backend-2xok.onrender.com/health" || true
+          sleep 15
+
       - name: Send shift alerts
         run: |
           curl -f "https://chainpulse-backend-2xok.onrender.com/send-alerts?secret=${{ secrets.UPDATE_SECRET }}"
