@@ -67,7 +67,54 @@ class User(Base):
     last_alert_sent        = Column(DateTime, nullable=True)
     access_token           = Column(String, nullable=True, index=True)
     created_at             = Column(DateTime, default=datetime.datetime.utcnow)
+# ─────────────────────────────────────────
+# NEW DATABASE MODELS
+# ─────────────────────────────────────────
 
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+    id                    = Column(Integer, primary_key=True)
+    user_id               = Column(Integer, index=True)
+    email                 = Column(String, unique=True, index=True)
+    max_drawdown_pct      = Column(Float, default=20.0)   # e.g. 20 = 20%
+    typical_leverage      = Column(Float, default=1.0)
+    holding_period_days   = Column(Integer, default=10)
+    risk_identity         = Column(String, default="balanced")  # conservative|balanced|aggressive
+    risk_multiplier       = Column(Float, default=1.0)
+    created_at            = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at            = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class ExposureLog(Base):
+    __tablename__ = "exposure_logs"
+    id                    = Column(Integer, primary_key=True)
+    email                 = Column(String, index=True)
+    coin                  = Column(String, default="BTC")
+    user_exposure_pct     = Column(Float)
+    model_exposure_pct    = Column(Float)
+    regime_label          = Column(String)
+    hazard_at_log         = Column(Float, default=0)
+    shift_risk_at_log     = Column(Float, default=0)
+    alignment_at_log      = Column(Float, default=0)
+    followed_model        = Column(Boolean, default=False)
+    price_at_log          = Column(Float, default=0)
+    created_at            = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class PerformanceEntry(Base):
+    __tablename__ = "performance_entries"
+    id                    = Column(Integer, primary_key=True)
+    email                 = Column(String, index=True)
+    coin                  = Column(String, default="BTC")
+    date                  = Column(DateTime, default=datetime.datetime.utcnow)
+    user_exposure_pct     = Column(Float, default=0)
+    model_exposure_pct    = Column(Float, default=0)
+    price_open            = Column(Float, default=0)
+    price_close           = Column(Float, default=0)
+    user_return_pct       = Column(Float, default=0)
+    model_return_pct      = Column(Float, default=0)
+    regime_label          = Column(String, default="Neutral")
+    discipline_flags      = Column(String, default="")  # JSON string of flags
 
 Base.metadata.create_all(bind=engine)
 
@@ -116,6 +163,430 @@ REGIME_NUMERIC = {
     "Risk-Off":        -1,
     "Strong Risk-Off": -2,
 }
+
+# ─────────────────────────────────────────
+# DECISION ENGINE
+# ─────────────────────────────────────────
+
+def compute_decision_score(
+    hazard:         float,
+    shift_risk:     float,
+    alignment:      float,
+    survival:       float,
+    breadth_score:  float,
+    maturity_pct:   float,
+) -> dict:
+    """
+    Weighted composite score that maps to a trading directive.
+    Higher score = more bullish / increase exposure.
+    Lower score  = defensive / reduce exposure.
+    """
+    # Normalise breadth -100/+100 → 0/100
+    breadth_norm = (breadth_score + 100) / 2
+
+    # Build component scores (all 0-100, higher = better for bulls)
+    survival_score   = survival
+    safety_score     = 100 - hazard
+    shift_score      = 100 - shift_risk
+    maturity_score   = 100 - maturity_pct   # late regime = lower score
+    breadth_bullish  = breadth_norm
+
+    decision_score = round(
+        survival_score   * 0.25 +
+        safety_score     * 0.25 +
+        shift_score      * 0.20 +
+        alignment        * 0.15 +
+        maturity_score   * 0.10 +
+        breadth_bullish  * 0.05,
+        1
+    )
+    decision_score = min(100, max(0, decision_score))
+
+    # Map to directive
+    if decision_score >= 80:
+        directive      = "Increase Exposure"
+        action         = "aggressive"
+        color          = "emerald"
+        description    = "All signals aligned bullish. Regime is healthy and persistent."
+        actions = [
+            "Add to existing positions on pullbacks",
+            "Increase position size toward upper band",
+            "Trail stops to lock in gains",
+            "Monitor for breadth confirmation",
+        ]
+    elif decision_score >= 60:
+        directive      = "Maintain Exposure"
+        action         = "hold"
+        color          = "green"
+        description    = "Regime intact. No action required. Stay the course."
+        actions = [
+            "Hold current positions",
+            "No new leverage",
+            "Monitor hazard rate for changes",
+            "Re-evaluate if shift risk exceeds 60%",
+        ]
+    elif decision_score >= 40:
+        directive      = "Trim Exposure"
+        action         = "trim"
+        color          = "yellow"
+        description    = "Regime showing early deterioration. Reduce risk selectively."
+        actions = [
+            "Reduce position size by 15–25%",
+            "Avoid adding new breakout entries",
+            "Take partial profits on extended positions",
+            "Tighten stop losses",
+        ]
+    elif decision_score >= 20:
+        directive      = "Switch to Defensive"
+        action         = "defensive"
+        color          = "orange"
+        description    = "Multiple deterioration signals active. Reduce exposure significantly."
+        actions = [
+            "Reduce exposure to lower band immediately",
+            "No new long entries",
+            "Move profits to cash or stables",
+            "Wait for regime confirmation before re-entering",
+        ]
+    else:
+        directive      = "Risk-Off — Exit"
+        action         = "exit"
+        color          = "red"
+        description    = "Regime breakdown in progress. Capital preservation is the priority."
+        actions = [
+            "Exit or heavily reduce all positions",
+            "Move to maximum cash allocation",
+            "Do not average down",
+            "Wait for full regime reset before re-entry",
+        ]
+
+    return {
+        "score":       decision_score,
+        "directive":   directive,
+        "action":      action,
+        "color":       color,
+        "description": description,
+        "actions":     actions,
+        "components": {
+            "survival":   round(survival_score, 1),
+            "safety":     round(safety_score, 1),
+            "shift":      round(shift_score, 1),
+            "alignment":  round(alignment, 1),
+            "maturity":   round(maturity_score, 1),
+            "breadth":    round(breadth_bullish, 1),
+        },
+    }
+
+
+def compute_if_nothing_panel(
+    user_exposure:    float,
+    model_exposure:   float,
+    hazard:           float,
+    shift_risk:       float,
+    regime_label:     str,
+) -> dict:
+    """
+    Shows consequences of maintaining current exposure
+    vs following the model recommendation.
+    """
+    delta         = user_exposure - model_exposure
+    over_exposed  = delta > 0
+    delta_abs     = abs(round(delta, 1))
+
+    # Drawdown probability model
+    # Base drawdown prob from hazard + shift_risk
+    base_dd_prob = round((hazard * 0.5 + shift_risk * 0.5), 1)
+
+    # If over-exposed, drawdown risk increases proportionally
+    exposure_multiplier = 1 + (delta / 100) * 0.8 if over_exposed else 1.0
+    adj_dd_prob         = round(min(95, base_dd_prob * exposure_multiplier), 1)
+    dd_prob_increase    = round(adj_dd_prob - base_dd_prob, 1)
+
+    # Expected loss on \$10k if drawdown occurs
+    # (simplified: exposure% * drawdown_magnitude)
+    dd_magnitude = round(
+        (hazard / 100) * 0.25 * 100, 1  # rough 0–25% price move
+    )
+    expected_loss_pct = round(
+        (user_exposure / 100) * (dd_magnitude / 100) * 100, 1
+    )
+    model_loss_pct    = round(
+        (model_exposure / 100) * (dd_magnitude / 100) * 100, 1
+    )
+
+    if over_exposed and delta_abs > 15:
+        severity  = "high"
+        message   = f"You are {delta_abs}% over regime tolerance"
+        sub       = "Maintaining this exposure significantly increases drawdown probability."
+    elif over_exposed and delta_abs > 5:
+        severity  = "medium"
+        message   = f"You are {delta_abs}% above optimal"
+        sub       = "Small overexposure — consider trimming on the next strength."
+    elif not over_exposed:
+        severity  = "low"
+        message   = f"You are {delta_abs}% below optimal — room to add"
+        sub       = "Consider scaling in on the next pullback if signals hold."
+    else:
+        severity  = "low"
+        message   = "Exposure aligned with regime recommendation"
+        sub       = "No action required."
+
+    return {
+        "user_exposure":       round(user_exposure, 1),
+        "model_exposure":      round(model_exposure, 1),
+        "delta":               round(delta, 1),
+        "delta_abs":           delta_abs,
+        "over_exposed":        over_exposed,
+        "severity":            severity,
+        "message":             message,
+        "sub":                 sub,
+        "drawdown_prob":       adj_dd_prob,
+        "dd_prob_increase":    dd_prob_increase,
+        "expected_loss_pct":   expected_loss_pct,
+        "model_loss_pct":      model_loss_pct,
+        "dd_magnitude_est":    dd_magnitude,
+        "regime_label":        regime_label,
+    }
+
+
+# ─────────────────────────────────────────
+# DISCIPLINE SCORING ENGINE
+# ─────────────────────────────────────────
+
+def compute_discipline_score(logs: list) -> dict:
+    """
+    Scores a user's discipline based on their exposure log history.
+    Checks if they followed the model during key regime events.
+    """
+    if not logs:
+        return {
+            "score":   None,
+            "label":   "No data yet",
+            "flags":   [],
+            "summary": "Log your exposure to start tracking discipline.",
+        }
+
+    total_logs  = len(logs)
+    followed    = sum(1 for l in logs if l.followed_model)
+    base_score  = round((followed / total_logs) * 100, 1) if total_logs > 0 else 50
+
+    flags = []
+    penalties = 0
+    bonuses   = 0
+
+    for log in logs:
+        hazard      = log.hazard_at_log     or 0
+        shift_risk  = log.shift_risk_at_log or 0
+        user_exp    = log.user_exposure_pct or 0
+        model_exp   = log.model_exposure_pct or 50
+        delta       = user_exp - model_exp
+
+        # Penalty: added exposure during high hazard
+        if hazard > 65 and delta > 10:
+            flags.append({
+                "type":    "penalty",
+                "label":   "Added leverage in elevated hazard",
+                "date":    log.created_at.strftime("%b %d"),
+                "regime":  log.regime_label,
+            })
+            penalties += 10
+
+        # Penalty: over-exposed during Risk-Off
+        if "Risk-Off" in (log.regime_label or "") and user_exp > model_exp + 15:
+            flags.append({
+                "type":    "penalty",
+                "label":   "Over-exposed in Risk-Off regime",
+                "date":    log.created_at.strftime("%b %d"),
+                "regime":  log.regime_label,
+            })
+            penalties += 15
+
+        # Bonus: reduced exposure when shift risk high
+        if shift_risk > 70 and delta < -5:
+            flags.append({
+                "type":    "bonus",
+                "label":   "Reduced exposure on hazard spike",
+                "date":    log.created_at.strftime("%b %d"),
+                "regime":  log.regime_label,
+            })
+            bonuses += 10
+
+        # Bonus: stayed disciplined in strong regime
+        if "Strong Risk-On" in (log.regime_label or "") and abs(delta) < 10:
+            flags.append({
+                "type":    "bonus",
+                "label":   "Stayed within band in strong regime",
+                "date":    log.created_at.strftime("%b %d"),
+                "regime":  log.regime_label,
+            })
+            bonuses += 5
+
+    final_score = round(
+        min(100, max(0, base_score + bonuses - penalties)), 1
+    )
+
+    if final_score >= 85:
+        label = "Excellent"
+    elif final_score >= 70:
+        label = "Good"
+    elif final_score >= 50:
+        label = "Average"
+    elif final_score >= 30:
+        label = "Needs Work"
+    else:
+        label = "Poor"
+
+    return {
+        "score":      final_score,
+        "label":      label,
+        "flags":      flags[-10:],   # last 10 events
+        "followed":   followed,
+        "total":      total_logs,
+        "bonuses":    bonuses,
+        "penalties":  penalties,
+        "summary":    f"You followed the model {followed}/{total_logs} times.",
+    }
+
+
+def compute_performance_comparison(
+    entries: list,
+) -> dict:
+    """
+    Compares user actual returns vs model-recommended returns.
+    """
+    if len(entries) < 3:
+        return {
+            "user_total_return":   None,
+            "model_total_return":  None,
+            "alpha":               None,
+            "periods":             len(entries),
+            "message":             "Need at least 3 entries for comparison.",
+        }
+
+    user_returns  = [e.user_return_pct  for e in entries if e.user_return_pct  is not None]
+    model_returns = [e.model_return_pct for e in entries if e.model_return_pct is not None]
+
+    if not user_returns or not model_returns:
+        return {"user_total_return": None, "model_total_return": None, "alpha": None}
+
+    # Compound returns
+    def compound(returns):
+        result = 1.0
+        for r in returns:
+            result *= (1 + r / 100)
+        return round((result - 1) * 100, 2)
+
+    user_total  = compound(user_returns)
+    model_total = compound(model_returns)
+    alpha       = round(user_total - model_total, 2)
+
+    # Regime breakdown
+    regime_perf = {}
+    for e in entries:
+        label = e.regime_label or "Neutral"
+        if label not in regime_perf:
+            regime_perf[label] = {"user": [], "model": []}
+        if e.user_return_pct is not None:
+            regime_perf[label]["user"].append(e.user_return_pct)
+        if e.model_return_pct is not None:
+            regime_perf[label]["model"].append(e.model_return_pct)
+
+    regime_summary = {}
+    for label, data in regime_perf.items():
+        if data["user"] and data["model"]:
+            regime_summary[label] = {
+                "user_avg":  round(sum(data["user"])  / len(data["user"]),  2),
+                "model_avg": round(sum(data["model"]) / len(data["model"]), 2),
+                "count":     len(data["user"]),
+            }
+
+    # Best / worst regime for user
+    best_regime  = max(regime_summary.items(), key=lambda x: x[1]["user_avg"],  default=(None, {}))
+    worst_regime = min(regime_summary.items(), key=lambda x: x[1]["user_avg"],  default=(None, {}))
+
+    # Build curve data for chart
+    curve = []
+    user_cum  = 1.0
+    model_cum = 1.0
+    for i, e in enumerate(entries):
+        user_cum  *= (1 + (e.user_return_pct  or 0) / 100)
+        model_cum *= (1 + (e.model_return_pct or 0) / 100)
+        curve.append({
+            "period":       i + 1,
+            "user_cum":     round((user_cum  - 1) * 100, 2),
+            "model_cum":    round((model_cum - 1) * 100, 2),
+            "date":         e.date.strftime("%b %d") if e.date else "",
+            "regime":       e.regime_label or "—",
+        })
+
+    return {
+        "user_total_return":   user_total,
+        "model_total_return":  model_total,
+        "alpha":               alpha,
+        "periods":             len(entries),
+        "regime_breakdown":    regime_summary,
+        "best_regime":         best_regime[0],
+        "worst_regime":        worst_regime[0],
+        "curve":               curve,
+        "message": (
+            f"Following ChainPulse would have returned {model_total:+.1f}%. "
+            f"Your actual: {user_total:+.1f}%."
+        ),
+    }
+
+
+# ─────────────────────────────────────────
+# MISTAKE REPLAY ENGINE
+# ─────────────────────────────────────────
+
+def compute_mistake_replay(
+    logs:   list,
+    db:     Session,
+    coin:   str,
+) -> list:
+    """
+    Identifies moments where user deviated from model
+    during high-risk regime conditions.
+    Returns list of 'replay events'.
+    """
+    replays = []
+    for log in logs:
+        hazard      = log.hazard_at_log     or 0
+        shift_risk  = log.shift_risk_at_log or 0
+        user_exp    = log.user_exposure_pct  or 0
+        model_exp   = log.model_exposure_pct or 50
+        delta       = user_exp - model_exp
+        regime      = log.regime_label or "Neutral"
+
+        # Only flag significant deviations during risky conditions
+        if (hazard > 55 or shift_risk > 60) and abs(delta) > 12:
+            severity = (
+                "high"   if (hazard > 70 or shift_risk > 75) and abs(delta) > 20 else
+                "medium" if abs(delta) > 15 else
+                "low"
+            )
+            direction = "over-exposed" if delta > 0 else "under-exposed"
+            replays.append({
+                "date":         log.created_at.strftime("%b %d, %Y"),
+                "regime":       regime,
+                "hazard":       hazard,
+                "shift_risk":   shift_risk,
+                "user_exp":     user_exp,
+                "model_exp":    model_exp,
+                "delta":        round(delta, 1),
+                "direction":    direction,
+                "severity":     severity,
+                "message": (
+                    f"You were {direction} by {abs(round(delta,1))}% "
+                    f"while hazard was {hazard}% in {regime} regime."
+                ),
+                "signals_at_time": {
+                    "hazard":     hazard,
+                    "shift_risk": shift_risk,
+                    "alignment":  log.alignment_at_log or 0,
+                },
+            })
+
+    return sorted(replays, key=lambda x: x["severity"] == "high", reverse=True)[:10]
 
 RISK_EVENTS = [
     {"name": "FOMC Meeting",   "type": "macro",  "impact": "High"},
@@ -1537,6 +2008,32 @@ def full_intelligence(
 
 
 # ── Stripe ───────────────────────────────────
+# ─────────────────────────────────────────
+# NEW PYDANTIC MODELS
+# ─────────────────────────────────────────
+
+class UserProfileRequest(BaseModel):
+    email:                str
+    max_drawdown_pct:     float = 20.0
+    typical_leverage:     float = 1.0
+    holding_period_days:  int   = 10
+    risk_identity:        str   = "balanced"
+
+
+class ExposureLogRequest(BaseModel):
+    email:             str
+    coin:              str   = "BTC"
+    user_exposure_pct: float
+    notes:             str   = ""
+
+
+class PerformanceEntryRequest(BaseModel):
+    email:              str
+    coin:               str   = "BTC"
+    user_exposure_pct:  float
+    price_open:         float
+    price_close:        float
+
 
 class CheckoutRequest(BaseModel):
     email: str = ""
@@ -2080,6 +2577,505 @@ def debug_prices(coin: str = "BTC", interval: str = "1h"):
         "last_volume":  volumes[-1] if volumes else None,
     }
 
+@app.get("/decision-engine")
+def decision_engine_endpoint(
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the ChainPulse Directive — what to physically do today.
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    stack   = build_regime_stack(coin, db)
+    breadth = compute_market_breadth(db)
+
+    if stack["incomplete"]:
+        return {"error": "Insufficient data"}
+
+    hazard      = stack.get("hazard")     or 0
+    shift_risk  = stack.get("shift_risk") or 0
+    alignment   = stack.get("alignment")  or 0
+    survival    = stack.get("survival")   or 50
+    age_1h      = current_age(db, coin, "1h")
+    avg_dur     = average_regime_duration(db, coin, "1h")
+    maturity    = trend_maturity_score(age_1h, avg_dur, hazard)
+
+    decision = compute_decision_score(
+        hazard        = hazard,
+        shift_risk    = shift_risk,
+        alignment     = alignment,
+        survival      = survival,
+        breadth_score = breadth.get("breadth_score", 0),
+        maturity_pct  = maturity,
+    )
+
+    # Add regime context
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    decision["regime"]     = exec_label
+    decision["exposure"]   = stack.get("exposure", 50)
+    decision["coin"]       = coin
+
+    return decision
+
+
+@app.post("/if-nothing-panel")
+def if_nothing_panel_endpoint(
+    coin:          str   = "BTC",
+    user_exposure: float = 50.0,
+    db: Session = Depends(get_db),
+):
+    """
+    Shows consequence of maintaining current exposure.
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"error": "Insufficient data"}
+
+    exec_label    = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    model_exposure = stack.get("exposure") or 50
+
+    panel = compute_if_nothing_panel(
+        user_exposure  = user_exposure,
+        model_exposure = model_exposure,
+        hazard         = stack.get("hazard")     or 0,
+        shift_risk     = stack.get("shift_risk") or 0,
+        regime_label   = exec_label,
+    )
+    return panel
+
+
+@app.post("/user-profile")
+def save_user_profile(
+    body: UserProfileRequest,
+    db:   Session = Depends(get_db),
+):
+    """Create or update user risk profile."""
+    email = body.email.strip().lower()
+
+    # Risk multiplier based on identity
+    mult_map = {
+        "conservative": 0.70,
+        "balanced":     1.00,
+        "aggressive":   1.25,
+    }
+    risk_mult = mult_map.get(body.risk_identity, 1.0)
+
+    profile = db.query(UserProfile).filter(
+        UserProfile.email == email
+    ).first()
+
+    if not profile:
+        profile = UserProfile(email=email)
+        db.add(profile)
+
+    profile.max_drawdown_pct    = body.max_drawdown_pct
+    profile.typical_leverage    = body.typical_leverage
+    profile.holding_period_days = body.holding_period_days
+    profile.risk_identity       = body.risk_identity
+    profile.risk_multiplier     = risk_mult
+    profile.updated_at          = datetime.datetime.utcnow()
+    db.commit()
+
+    return {
+        "status":          "saved",
+        "email":           email,
+        "risk_multiplier": risk_mult,
+        "profile":         {
+            "max_drawdown_pct":    profile.max_drawdown_pct,
+            "typical_leverage":    profile.typical_leverage,
+            "holding_period_days": profile.holding_period_days,
+            "risk_identity":       profile.risk_identity,
+        },
+    }
+
+
+@app.get("/user-profile")
+def get_user_profile(
+    email: str,
+    coin:  str = "BTC",
+    db:    Session = Depends(get_db),
+):
+    """
+    Returns profile + personalised exposure recommendation.
+    """
+    email = email.strip().lower()
+    profile = db.query(UserProfile).filter(
+        UserProfile.email == email
+    ).first()
+
+    if not profile:
+        return {
+            "exists":  False,
+            "message": "No profile found. Complete onboarding to personalise.",
+        }
+
+    stack = build_regime_stack(coin, db)
+    personalised_exposure = None
+    if not stack["incomplete"] and stack.get("exposure"):
+        personalised_exposure = round(
+            min(95, max(5, stack["exposure"] * profile.risk_multiplier)), 1
+        )
+
+    return {
+        "exists":                 True,
+        "email":                  email,
+        "risk_identity":          profile.risk_identity,
+        "risk_multiplier":        profile.risk_multiplier,
+        "max_drawdown_pct":       profile.max_drawdown_pct,
+        "typical_leverage":       profile.typical_leverage,
+        "holding_period_days":    profile.holding_period_days,
+        "personalised_exposure":  personalised_exposure,
+        "model_exposure":         stack.get("exposure") if not stack.get("incomplete") else None,
+        "created_at":             profile.created_at,
+    }
+
+
+@app.post("/log-exposure")
+def log_exposure(
+    body: ExposureLogRequest,
+    db:   Session = Depends(get_db),
+):
+    """
+    User logs their current actual exposure.
+    Used for discipline scoring and performance tracking.
+    """
+    email = body.email.strip().lower()
+    if body.coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    stack = build_regime_stack(body.coin, db)
+    if stack["incomplete"]:
+        raise HTTPException(status_code=400, detail="No regime data yet")
+
+    model_exp   = stack.get("exposure")   or 50
+    hazard      = stack.get("hazard")     or 0
+    shift_risk  = stack.get("shift_risk") or 0
+    alignment   = stack.get("alignment")  or 0
+    exec_label  = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    delta       = body.user_exposure_pct - model_exp
+    followed    = abs(delta) <= 10   # within 10% = followed
+
+    log = ExposureLog(
+        email               = email,
+        coin                = body.coin,
+        user_exposure_pct   = body.user_exposure_pct,
+        model_exposure_pct  = model_exp,
+        regime_label        = exec_label,
+        hazard_at_log       = hazard,
+        shift_risk_at_log   = shift_risk,
+        alignment_at_log    = alignment,
+        followed_model      = followed,
+    )
+    db.add(log)
+    db.commit()
+
+    # Immediate feedback
+    if abs(delta) > 20:
+        feedback = "⚠ Large deviation from model recommendation"
+        severity = "warning"
+    elif abs(delta) > 10:
+        feedback = "Moderate deviation — within acceptable range"
+        severity = "caution"
+    else:
+        feedback = "✓ Aligned with model recommendation"
+        severity = "ok"
+
+    return {
+        "status":           "logged",
+        "user_exposure":    body.user_exposure_pct,
+        "model_exposure":   model_exp,
+        "delta":            round(delta, 1),
+        "followed_model":   followed,
+        "feedback":         feedback,
+        "severity":         severity,
+        "regime":           exec_label,
+    }
+
+
+@app.get("/discipline-score")
+def discipline_score_endpoint(
+    email: str,
+    db:    Session = Depends(get_db),
+):
+    """
+    Returns weekly discipline score for a user.
+    """
+    email = email.strip().lower()
+    logs  = (
+        db.query(ExposureLog)
+        .filter(ExposureLog.email == email)
+        .order_by(ExposureLog.created_at.desc())
+        .limit(30)
+        .all()
+    )
+    result = compute_discipline_score(logs)
+    result["email"] = email
+    return result
+
+
+@app.get("/performance-comparison")
+def performance_comparison_endpoint(
+    email: str,
+    coin:  str = "BTC",
+    limit: int = 30,
+    db:    Session = Depends(get_db),
+):
+    """
+    Returns performance comparison: user vs model.
+    """
+    email = email.strip().lower()
+    entries = (
+        db.query(PerformanceEntry)
+        .filter(
+            PerformanceEntry.email == email,
+            PerformanceEntry.coin  == coin,
+        )
+        .order_by(PerformanceEntry.date.asc())
+        .limit(limit)
+        .all()
+    )
+    result = compute_performance_comparison(entries)
+    result["email"] = email
+    result["coin"]  = coin
+    return result
+
+
+@app.post("/log-performance")
+def log_performance(
+    body: PerformanceEntryRequest,
+    db:   Session = Depends(get_db),
+):
+    """
+    Logs a closed position for performance tracking.
+    price_open  = price when position was opened
+    price_close = price when position was closed
+    """
+    email = body.email.strip().lower()
+    if body.coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if body.price_open <= 0 or body.price_close <= 0:
+        raise HTTPException(status_code=400, detail="Invalid prices")
+
+    stack = build_regime_stack(body.coin, db)
+    model_exp   = stack.get("exposure")   or 50
+    exec_label  = stack["execution"]["label"] if (
+        not stack["incomplete"] and stack.get("execution")
+    ) else "Neutral"
+
+    # Calculate returns (exposure-weighted)
+    price_return = ((body.price_close - body.price_open) / body.price_open) * 100
+    user_return  = round(price_return * (body.user_exposure_pct  / 100), 2)
+    model_return = round(price_return * (model_exp               / 100), 2)
+
+    entry = PerformanceEntry(
+        email               = email,
+        coin                = body.coin,
+        date                = datetime.datetime.utcnow(),
+        user_exposure_pct   = body.user_exposure_pct,
+        model_exposure_pct  = model_exp,
+        price_open          = body.price_open,
+        price_close         = body.price_close,
+        user_return_pct     = user_return,
+        model_return_pct    = model_return,
+        regime_label        = exec_label,
+    )
+    db.add(entry)
+    db.commit()
+
+    return {
+        "status":        "logged",
+        "price_return":  round(price_return, 2),
+        "user_return":   user_return,
+        "model_return":  model_return,
+        "alpha":         round(user_return - model_return, 2),
+        "regime":        exec_label,
+    }
+
+
+@app.get("/mistake-replay")
+def mistake_replay_endpoint(
+    email: str,
+    coin:  str = "BTC",
+    db:    Session = Depends(get_db),
+):
+    """
+    Returns moments where user deviated during high-risk conditions.
+    """
+    email = email.strip().lower()
+    logs  = (
+        db.query(ExposureLog)
+        .filter(
+            ExposureLog.email == email,
+            ExposureLog.coin  == coin,
+        )
+        .order_by(ExposureLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    replays = compute_mistake_replay(logs, db, coin)
+    return {
+        "email":   email,
+        "coin":    coin,
+        "replays": replays,
+        "count":   len(replays),
+    }
+
+
+@app.get("/edge-profile")
+def edge_profile_endpoint(
+    email: str,
+    db:    Session = Depends(get_db),
+):
+    """
+    After sufficient data, shows which regimes the user performs best in.
+    """
+    email = email.strip().lower()
+    entries = (
+        db.query(PerformanceEntry)
+        .filter(PerformanceEntry.email == email)
+        .order_by(PerformanceEntry.date.asc())
+        .all()
+    )
+
+    if len(entries) < 5:
+        return {
+            "email":        email,
+            "ready":        False,
+            "message":      f"Need {5 - len(entries)} more entries to build your edge profile.",
+            "entry_count":  len(entries),
+        }
+
+    # Group by regime
+    regime_data = {}
+    for e in entries:
+        label = e.regime_label or "Neutral"
+        if label not in regime_data:
+            regime_data[label] = []
+        if e.user_return_pct is not None:
+            regime_data[label].append(e.user_return_pct)
+
+    profile = {}
+    for regime, returns in regime_data.items():
+        if returns:
+            avg   = round(sum(returns) / len(returns), 2)
+            wins  = sum(1 for r in returns if r > 0)
+            profile[regime] = {
+                "avg_return":  avg,
+                "win_rate":    round((wins / len(returns)) * 100, 1),
+                "count":       len(returns),
+                "performance": (
+                    "Strong" if avg > 2   else
+                    "Good"   if avg > 0.5 else
+                    "Weak"   if avg > -1  else
+                    "Poor"
+                ),
+            }
+
+    if not profile:
+        return {"email": email, "ready": False, "message": "No return data."}
+
+    best_regime  = max(profile.items(), key=lambda x: x[1]["avg_return"])
+    worst_regime = min(profile.items(), key=lambda x: x[1]["avg_return"])
+
+    recommendations = []
+    for regime, data in profile.items():
+        if data["performance"] in ("Weak", "Poor"):
+            recommendations.append(
+                f"Reduce exposure faster in {regime} conditions "
+                f"(avg {data['avg_return']:+.1f}%)"
+            )
+        elif data["performance"] == "Strong":
+            recommendations.append(
+                f"You have edge in {regime} — stay disciplined here "
+                f"(avg {data['avg_return']:+.1f}%)"
+            )
+
+    return {
+        "email":         email,
+        "ready":         True,
+        "entry_count":   len(entries),
+        "best_regime":   best_regime[0],
+        "worst_regime":  worst_regime[0],
+        "profile":       profile,
+        "recommendations": recommendations,
+    }
+
+
+@app.get("/full-accountability")
+def full_accountability(
+    email: str,
+    coin:  str = "BTC",
+    db:    Session = Depends(get_db),
+):
+    """
+    Single endpoint returning all accountability data for the frontend.
+    """
+    email = email.strip().lower()
+
+    logs = (
+        db.query(ExposureLog)
+        .filter(ExposureLog.email == email)
+        .order_by(ExposureLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    entries = (
+        db.query(PerformanceEntry)
+        .filter(
+            PerformanceEntry.email == email,
+            PerformanceEntry.coin  == coin,
+        )
+        .order_by(PerformanceEntry.date.asc())
+        .limit(30)
+        .all()
+    )
+    profile = db.query(UserProfile).filter(
+        UserProfile.email == email
+    ).first()
+
+    discipline    = compute_discipline_score(logs)
+    performance   = compute_performance_comparison(entries)
+    replays       = compute_mistake_replay(logs, db, coin)
+
+    # Edge profile (if enough data)
+    edge = None
+    if len(entries) >= 5:
+        regime_data = {}
+        for e in entries:
+            label = e.regime_label or "Neutral"
+            if label not in regime_data:
+                regime_data[label] = []
+            if e.user_return_pct is not None:
+                regime_data[label].append(e.user_return_pct)
+        edge = {
+            regime: {
+                "avg_return": round(sum(r)/len(r), 2),
+                "win_rate":   round(sum(1 for x in r if x > 0) / len(r) * 100, 1),
+                "count":      len(r),
+            }
+            for regime, r in regime_data.items() if r
+        }
+
+    return {
+        "email":       email,
+        "coin":        coin,
+        "discipline":  discipline,
+        "performance": performance,
+        "replays":     replays,
+        "edge":        edge,
+        "profile": {
+            "risk_identity":       profile.risk_identity       if profile else None,
+            "risk_multiplier":     profile.risk_multiplier     if profile else None,
+            "max_drawdown_pct":    profile.max_drawdown_pct    if profile else None,
+            "holding_period_days": profile.holding_period_days if profile else None,
+        } if profile else None,
+        "has_profile": profile is not None,
+    }
 
 @app.get("/debug-stack")
 def debug_stack(coin: str = "BTC", db: Session = Depends(get_db)):
