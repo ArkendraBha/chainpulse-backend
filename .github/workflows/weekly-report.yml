@@ -11,4 +11,4 @@ jobs:
     steps:
       - name: Call Weekly Report Endpoint
         run: |
-          curl -X GET https://chainpulse-backend-2xok.onrender.com/weekly-report
+          curl -X GET "https://chainpulse-backend-2xok.onrender.com/weekly-report?secret=${{ secrets.UPDATE_SECRET }}"
