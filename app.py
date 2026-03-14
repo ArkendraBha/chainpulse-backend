@@ -13,8 +13,6 @@ import requests
 import math
 import stripe
 import logging
-import hmac
-import hashlib
 
 # -------------------------
 # SETUP
@@ -25,19 +23,19 @@ logger = logging.getLogger("chainpulse")
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./chainpulse.db")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
+DATABASE_URL          = os.getenv("DATABASE_URL", "sqlite:///./chainpulse.db")
+STRIPE_SECRET_KEY     = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID       = os.getenv("STRIPE_PRICE_ID")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-UPDATE_SECRET = os.getenv("UPDATE_SECRET", "changeme")
+RESEND_API_KEY        = os.getenv("RESEND_API_KEY")
+UPDATE_SECRET         = os.getenv("UPDATE_SECRET", "changeme")
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine       = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+Base         = declarative_base()
 
 # -------------------------
 # DATABASE MODELS
@@ -45,33 +43,34 @@ Base = declarative_base()
 
 class MarketSummary(Base):
     __tablename__ = "market_summary"
-    id = Column(Integer, primary_key=True)
-    coin = Column(String, index=True)
-    score = Column(Float)
-    label = Column(String)
-    coherence = Column(Float)
-    momentum_4h = Column(Float, default=0)
-    momentum_24h = Column(Float, default=0)
+    id             = Column(Integer, primary_key=True)
+    coin           = Column(String, index=True)
+    timeframe      = Column(String, index=True, default="1h")  # "1h" | "4h" | "1d"
+    score          = Column(Float)
+    label          = Column(String)
+    coherence      = Column(Float)
+    momentum_4h    = Column(Float, default=0)
+    momentum_24h   = Column(Float, default=0)
     volatility_val = Column(Float, default=0)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at     = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    email = Column(String, unique=True, index=True)
-    subscription_status = Column(String, default="inactive")
-    stripe_customer_id = Column(String, nullable=True)
+    id                     = Column(Integer, primary_key=True)
+    email                  = Column(String, unique=True, index=True)
+    subscription_status    = Column(String, default="inactive")
+    stripe_customer_id     = Column(String, nullable=True)
     stripe_subscription_id = Column(String, nullable=True)
-    alerts_enabled = Column(Boolean, default=False)
-    last_alert_sent = Column(DateTime, nullable=True)
-    access_token = Column(String, nullable=True, index=True)  # Pro auth token
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    alerts_enabled         = Column(Boolean, default=False)
+    last_alert_sent        = Column(DateTime, nullable=True)
+    access_token           = Column(String, nullable=True, index=True)
+    created_at             = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="ChainPulse API", version="2.0")
+app = FastAPI(title="ChainPulse API", version="3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,72 +96,73 @@ def get_db():
         db.close()
 
 # -------------------------
-# SUPPORTED COINS
+# CONSTANTS
 # -------------------------
 
-SUPPORTED_COINS = ["BTC", "ETH", "SOL", "BNB", "AVAX"]
+SUPPORTED_COINS      = ["BTC", "ETH", "SOL", "BNB", "AVAX"]
+SUPPORTED_TIMEFRAMES = ["1h", "4h", "1d"]
+
+TIMEFRAME_LABELS = {
+    "1h": "Execution",
+    "4h": "Trend",
+    "1d": "Macro",
+}
+
+REGIME_NUMERIC = {
+    "Strong Risk-On":   2,
+    "Risk-On":          1,
+    "Neutral":          0,
+    "Risk-Off":        -1,
+    "Strong Risk-Off": -2,
+}
 
 # -------------------------
 # AUTH HELPER
 # -------------------------
 
 def resolve_pro_status(authorization: Optional[str], db: Session) -> bool:
-    """
-    Reads Authorization: Bearer <token> header.
-    Returns True if token matches an active Pro user.
-    """
     if not authorization or not authorization.startswith("Bearer "):
         return False
-
     token = authorization.replace("Bearer ", "").strip()
     if not token:
         return False
-
     user = db.query(User).filter(User.access_token == token).first()
     if not user:
         return False
-
     return user.subscription_status == "active"
 
 # -------------------------
 # MARKET DATA
 # -------------------------
 
-def get_prices(symbol: str, interval: str = "1h", limit: int = 100):
-    url = "https://api.binance.com/api/v3/klines"
+def get_klines(symbol: str, interval: str, limit: int = 120):
+    """
+    Single function that returns (prices, volumes).
+    Replaces the old get_prices + get_volumes pair.
+    """
+    url    = "https://api.binance.com/api/v3/klines"
     params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
     try:
-        r = requests.get(url, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
         if not isinstance(data, list):
-            logger.warning(f"Unexpected response for {symbol}: {data}")
-            return []
-        return [float(c[4]) for c in data]
+            logger.warning(f"Unexpected Binance response for {symbol}/{interval}")
+            return [], []
+        prices  = [float(c[4]) for c in data]
+        volumes = [float(c[5]) for c in data]
+        return prices, volumes
     except Exception as e:
-        logger.error(f"Price fetch failed for {symbol}: {e}")
-        return []
-
-
-def get_volumes(symbol: str, interval: str = "1h", limit: int = 100):
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
-    try:
-        r = requests.get(url, params=params, timeout=8)
-        r.raise_for_status()
-        data = r.json()
-        return [float(c[5]) for c in data]
-    except Exception as e:
-        logger.error(f"Volume fetch failed for {symbol}: {e}")
-        return []
+        logger.error(f"Kline fetch failed {symbol}/{interval}: {e}")
+        return [], []
 
 
 def volatility(prices: list, period: int = 20) -> float:
     if len(prices) < period:
         return 0.0
     subset = prices[-period:]
-    mean = sum(subset) / len(subset)
-    var = sum((p - mean) ** 2 for p in subset) / len(subset)
+    mean   = sum(subset) / len(subset)
+    var    = sum((p - mean) ** 2 for p in subset) / len(subset)
     return math.sqrt(var)
 
 
@@ -170,335 +170,587 @@ def volume_momentum(volumes: list, period: int = 10) -> float:
     if len(volumes) < period * 2:
         return 0.0
     recent = sum(volumes[-period:]) / period
-    prior = sum(volumes[-period * 2:-period]) / period
+    prior  = sum(volumes[-period * 2:-period]) / period
     if prior == 0:
         return 0.0
     return ((recent - prior) / prior) * 100
 
 
-def calculate_coherence(mom_4h: float, mom_24h: float, vol_score: float) -> float:
-    if (mom_4h >= 0 and mom_24h >= 0) or (mom_4h < 0 and mom_24h < 0):
+def calculate_coherence(mom_short: float, mom_long: float, vol_score: float) -> float:
+    """
+    Directional agreement between two momentum periods,
+    penalised by volatility noise. Range 0–100.
+    """
+    if (mom_short >= 0 and mom_long >= 0) or (mom_short < 0 and mom_long < 0):
         alignment = 1.0
     else:
         alignment = 0.3
 
-    magnitude = (abs(mom_4h) + abs(mom_24h)) / 2
+    magnitude      = (abs(mom_short) + abs(mom_long)) / 2
     magnitude_norm = min(magnitude / 5.0, 1.0) * 100
-    vol_penalty = min(vol_score / 500, 0.5)
+    vol_penalty    = min(vol_score / 500, 0.5)
     raw = alignment * magnitude_norm * (1 - vol_penalty)
     return round(max(0, min(100, raw)), 2)
 
 
-def calculate_score_full(coin: str):
-    prices = get_prices(coin)
-    volumes = get_volumes(coin)
+def calculate_score_for_timeframe(coin: str, interval: str) -> Optional[dict]:
+    """
+    Compute regime score for a given coin + timeframe.
+    Lookback periods are scaled to the candle size.
+    """
+    prices, volumes = get_klines(coin, interval, limit=120)
 
-    if len(prices) < 25:
+    if len(prices) < 30:
         return None
 
-    mom_4h = ((prices[-1] - prices[-4]) / prices[-4]) * 100
-    mom_24h = ((prices[-1] - prices[-24]) / prices[-24]) * 100
-    vol = volatility(prices)
-    vol_mom = volume_momentum(volumes)
+    if interval == "1h":
+        short_lb, long_lb = 4, 24
+    elif interval == "4h":
+        short_lb, long_lb = 6, 24      # 6×4h = 24h,  24×4h = 4 days
+    else:                               # "1d"
+        short_lb, long_lb = 7, 30      # 7d,  30d
 
-    score = 0.55 * mom_24h + 0.35 * mom_4h - 0.08 * vol + 0.02 * vol_mom
+    if len(prices) < long_lb + 1:
+        return None
+
+    mom_short = ((prices[-1] - prices[-short_lb]) / prices[-short_lb]) * 100
+    mom_long  = ((prices[-1] - prices[-long_lb])  / prices[-long_lb])  * 100
+    vol       = volatility(prices)
+    vol_mom   = volume_momentum(volumes)
+
+    score = 0.55 * mom_long + 0.35 * mom_short - 0.08 * vol + 0.02 * vol_mom
     score = max(-100, min(100, score))
-    coherence = calculate_coherence(mom_4h, mom_24h, vol)
+    coherence = calculate_coherence(mom_short, mom_long, vol)
 
     return {
-        "score": round(score, 4),
-        "mom_4h": round(mom_4h, 4),
-        "mom_24h": round(mom_24h, 4),
+        "score":      round(score, 4),
+        "mom_short":  round(mom_short, 4),
+        "mom_long":   round(mom_long, 4),
         "volatility": round(vol, 4),
-        "coherence": coherence,
+        "coherence":  coherence,
     }
 
 
 def classify(score: float) -> str:
-    if score > 35:
-        return "Strong Risk-On"
-    if score > 15:
-        return "Risk-On"
-    if score < -35:
-        return "Strong Risk-Off"
-    if score < -15:
-        return "Risk-Off"
+    if score > 35:  return "Strong Risk-On"
+    if score > 15:  return "Risk-On"
+    if score < -35: return "Strong Risk-Off"
+    if score < -15: return "Risk-Off"
     return "Neutral"
+
+# -------------------------
+# REGIME ALIGNMENT ENGINE
+# -------------------------
+
+def regime_alignment(labels: list) -> float:
+    """
+    How aligned are the three timeframes?
+    All agree on direction → 100%.  Mixed → lower.
+    """
+    scores  = [REGIME_NUMERIC.get(l, 0) for l in labels]
+    if not scores:
+        return 0.0
+    max_sum = 2 * len(scores)
+    return round((abs(sum(scores)) / max_sum) * 100, 2)
+
+
+def alignment_direction(labels: list) -> str:
+    scores = [REGIME_NUMERIC.get(l, 0) for l in labels]
+    total  = sum(scores)
+    if total > 0:  return "bullish"
+    if total < 0:  return "bearish"
+    return "mixed"
 
 # -------------------------
 # UPDATE ENGINE
 # -------------------------
 
-def update_market(coin: str, db: Session):
-    result = calculate_score_full(coin)
+def update_market(coin: str, timeframe: str, db: Session):
+    result = calculate_score_for_timeframe(coin, timeframe)
     if result is None:
-        logger.warning(f"Insufficient price data for {coin}")
+        logger.warning(f"Insufficient data for {coin}/{timeframe}")
         return None
 
     entry = MarketSummary(
         coin=coin,
+        timeframe=timeframe,
         score=result["score"],
         label=classify(result["score"]),
         coherence=result["coherence"],
-        momentum_4h=result["mom_4h"],
-        momentum_24h=result["mom_24h"],
+        momentum_4h=result["mom_short"],
+        momentum_24h=result["mom_long"],
         volatility_val=result["volatility"],
     )
     db.add(entry)
     db.commit()
     db.refresh(entry)
-    logger.info(f"Updated {coin}: score={result['score']}, label={entry.label}")
+    logger.info(f"Updated {coin}/{timeframe}: {entry.label} ({entry.score})")
     return entry
 
 # -------------------------
 # STATISTICS ENGINE
 # -------------------------
 
-def get_history(db: Session, coin: str):
+def get_history(db: Session, coin: str, timeframe: str = "1h"):
     return (
         db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == timeframe,
+        )
         .order_by(MarketSummary.created_at.asc())
         .all()
     )
 
 
-def regime_durations(db: Session, coin: str) -> list:
-    records = get_history(db, coin)
+def regime_durations(db: Session, coin: str, timeframe: str = "1h") -> list:
+    records = get_history(db, coin, timeframe)
     if not records:
         return []
-
-    durations = []
+    durations     = []
     current_label = records[0].label
-    start_time = records[0].created_at
-
+    start_time    = records[0].created_at
     for r in records[1:]:
         if r.label != current_label:
-            duration = (r.created_at - start_time).total_seconds() / 3600
-            if duration > 0:
-                durations.append(duration)
+            d = (r.created_at - start_time).total_seconds() / 3600
+            if d > 0:
+                durations.append(d)
             current_label = r.label
-            start_time = r.created_at
-
+            start_time    = r.created_at
     return durations
 
 
-def current_regime_start(db: Session, coin: str) -> datetime.datetime:
+def current_age(db: Session, coin: str, timeframe: str = "1h") -> float:
     records = (
         db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == timeframe,
+        )
         .order_by(MarketSummary.created_at.desc())
         .all()
     )
-
     if not records:
-        return datetime.datetime.utcnow()
-
+        return 0.0
     latest_label = records[0].label
-    start_time = records[0].created_at
-
+    start_time   = records[0].created_at
     for r in records:
         if r.label != latest_label:
             break
         start_time = r.created_at
-
-    return start_time
-
-
-def current_age(db: Session, coin: str) -> float:
-    start = current_regime_start(db, coin)
-    return (datetime.datetime.utcnow() - start).total_seconds() / 3600
+    return (datetime.datetime.utcnow() - start_time).total_seconds() / 3600
 
 
-def survival_probability(db: Session, coin: str) -> float:
-    durations = regime_durations(db, coin)
-    age = current_age(db, coin)
-
+def survival_probability(db: Session, coin: str, timeframe: str = "1h") -> float:
+    durations = regime_durations(db, coin, timeframe)
+    age       = current_age(db, coin, timeframe)
     if len(durations) < 5:
         return round(max(20.0, 90.0 - age * 4), 2)
-
     longer = [d for d in durations if d > age]
     return round((len(longer) / len(durations)) * 100, 2)
 
 
-def hazard_rate(db: Session, coin: str) -> float:
-    durations = regime_durations(db, coin)
-    age = current_age(db, coin)
-
+def hazard_rate(db: Session, coin: str, timeframe: str = "1h") -> float:
+    durations = regime_durations(db, coin, timeframe)
+    age       = current_age(db, coin, timeframe)
     if len(durations) < 5:
         return round(min(70.0, age * 5), 2)
-
     avg = sum(durations) / len(durations)
     return round(min(100.0, (age / (avg + 0.01)) * 100), 2)
 
 
-def percentile_rank(db: Session, coin: str, current_score: float) -> float:
-    scores = [r.score for r in get_history(db, coin)]
+def percentile_rank(
+    db: Session, coin: str, current_score: float, timeframe: str = "1h"
+) -> float:
+    scores = [r.score for r in get_history(db, coin, timeframe)]
     if len(scores) < 5:
         return round(50 + current_score / 2, 2)
     lower = [s for s in scores if s < current_score]
     return round((len(lower) / len(scores)) * 100, 2)
 
 
-def exposure_recommendation(
-    score: float, survival: float, hazard: float, coherence: float
-) -> float:
-    if score > 35:
-        base = 0.85
-    elif score > 15:
-        base = 0.65
-    elif score < -35:
-        base = 0.08
-    elif score < -15:
-        base = 0.22
-    else:
-        base = 0.42
-
-    persistence_factor = survival / 100
-    hazard_penalty = 1 - (hazard / 100) * 0.65
-    coherence_factor = 0.7 + (coherence / 100) * 0.3
-
-    exposure = base * persistence_factor * hazard_penalty * coherence_factor
-    return round(max(5.0, min(95.0, exposure * 100)), 2)
-
-
-def regime_shift_risk(hazard: float, survival: float, coherence: float) -> float:
-    hazard_component = hazard * 0.5
-    survival_component = (100 - survival) * 0.35
-    coherence_component = (100 - coherence) * 0.15
-    return round(min(100.0, hazard_component + survival_component + coherence_component), 2)
-
-
-def average_regime_duration(db: Session, coin: str) -> float:
-    durations = regime_durations(db, coin)
+def average_regime_duration(db: Session, coin: str, timeframe: str = "1h") -> float:
+    durations = regime_durations(db, coin, timeframe)
     if not durations:
         return 24.0
     return sum(durations) / len(durations)
 
 
 def trend_maturity_score(age: float, avg_duration: float, hazard: float) -> float:
-    """
-    0 = fresh regime just started
-    100 = overextended / historically mature
-    Combines age relative to average duration + hazard escalation
-    """
     if avg_duration == 0:
         age_component = min(100, age * 5)
     else:
         age_component = min(100, (age / avg_duration) * 100)
+    return round(min(100, max(0, age_component * 0.6 + hazard * 0.4)), 2)
 
-    maturity = (age_component * 0.6) + (hazard * 0.4)
-    return round(min(100, max(0, maturity)), 2)
+
+def regime_shift_risk(hazard: float, survival: float, coherence: float) -> float:
+    return round(
+        min(100.0,
+            hazard * 0.5
+            + (100 - survival) * 0.35
+            + (100 - coherence) * 0.15),
+        2,
+    )
+
+
+# ─── old single-timeframe exposure kept for backward compat ───
+def exposure_recommendation(
+    score: float, survival: float, hazard: float, coherence: float
+) -> float:
+    if score > 35:   base = 0.85
+    elif score > 15: base = 0.65
+    elif score < -35: base = 0.08
+    elif score < -15: base = 0.22
+    else:            base = 0.42
+    persistence_factor = survival / 100
+    hazard_penalty     = 1 - (hazard / 100) * 0.65
+    coherence_factor   = 0.7 + (coherence / 100) * 0.3
+    exposure = base * persistence_factor * hazard_penalty * coherence_factor
+    return round(max(5.0, min(95.0, exposure * 100)), 2)
+
+
+def exposure_recommendation_stacked(
+    macro_label:  str,
+    trend_label:  str,
+    exec_label:   str,
+    alignment:    float,
+    survival_1h:  float,
+    hazard_1h:    float,
+    coherence_1h: float,
+) -> float:
+    """
+    Multi-timeframe exposure engine.
+
+    Macro (1d)  → sets the permitted ceiling/floor
+    Trend (4h)  → selects base within that range
+    Exec  (1h)  → fine-tunes ±10 %
+    Alignment   → scales final output (0 % alignment = half exposure)
+    """
+    macro_num = REGIME_NUMERIC.get(macro_label, 0)
+    if macro_num >= 1:
+        macro_ceiling, macro_floor = 0.90, 0.30
+    elif macro_num == 0:
+        macro_ceiling, macro_floor = 0.60, 0.20
+    else:
+        macro_ceiling, macro_floor = 0.35, 0.05
+
+    trend_num = REGIME_NUMERIC.get(trend_label, 0)
+    rang      = macro_ceiling - macro_floor
+    if trend_num == 2:    base = macro_ceiling
+    elif trend_num == 1:  base = macro_floor + rang * 0.75
+    elif trend_num == 0:  base = macro_floor + rang * 0.50
+    elif trend_num == -1: base = macro_floor + rang * 0.25
+    else:                 base = macro_floor
+
+    exec_num = REGIME_NUMERIC.get(exec_label, 0)
+    base     = base + (exec_num / 2) * 0.10
+
+    persistence_factor = survival_1h / 100
+    hazard_penalty     = 1 - (hazard_1h / 100) * 0.65
+    coherence_factor   = 0.7 + (coherence_1h / 100) * 0.3
+    alignment_mult     = 0.5 + alignment / 200   # 0% → ×0.5,  100% → ×1.0
+
+    exposure = (
+        base
+        * persistence_factor
+        * hazard_penalty
+        * coherence_factor
+        * alignment_mult
+    )
+    return round(max(5.0, min(95.0, exposure * 100)), 2)
 
 # -------------------------
-# ROUTES — HEALTH
+# REGIME STACK BUILDER
 # -------------------------
+
+def build_regime_stack(coin: str, db: Session) -> dict:
+    """
+    Assembles the full three-layer regime stack for a coin.
+    Returns a single dict consumed by /regime-stack and /market-overview.
+    """
+    stack      = {}
+    labels     = []
+    coherences = []
+
+    for tf in ["1d", "4h", "1h"]:
+        record = (
+            db.query(MarketSummary)
+            .filter(
+                MarketSummary.coin == coin,
+                MarketSummary.timeframe == tf,
+            )
+            .order_by(MarketSummary.created_at.desc())
+            .first()
+        )
+        if record:
+            stack[tf] = {
+                "label":     record.label,
+                "score":     record.score,
+                "coherence": record.coherence,
+                "timestamp": record.created_at,
+            }
+            labels.append(record.label)
+            coherences.append(record.coherence)
+        else:
+            stack[tf] = None
+
+    if len(labels) < 3:
+        return {
+            "coin":       coin,
+            "macro":      stack.get("1d"),
+            "trend":      stack.get("4h"),
+            "execution":  stack.get("1h"),
+            "alignment":  None,
+            "direction":  None,
+            "exposure":   None,
+            "shift_risk": None,
+            "survival":   None,
+            "hazard":     None,
+            "incomplete": True,
+        }
+
+    align     = regime_alignment(labels)
+    direction = alignment_direction(labels)
+    avg_coh   = sum(coherences) / len(coherences)
+
+    survival_1h = survival_probability(db, coin, "1h")
+    hazard_1h   = hazard_rate(db, coin, "1h")
+
+    exposure = exposure_recommendation_stacked(
+        macro_label  = stack["1d"]["label"],
+        trend_label  = stack["4h"]["label"],
+        exec_label   = stack["1h"]["label"],
+        alignment    = align,
+        survival_1h  = survival_1h,
+        hazard_1h    = hazard_1h,
+        coherence_1h = stack["1h"]["coherence"],
+    )
+
+    shift_risk = regime_shift_risk(hazard_1h, survival_1h, avg_coh)
+
+    return {
+        "coin":       coin,
+        "macro":      stack["1d"],
+        "trend":      stack["4h"],
+        "execution":  stack["1h"],
+        "alignment":  align,
+        "direction":  direction,
+        "exposure":   exposure,
+        "shift_risk": shift_risk,
+        "survival":   survival_1h,
+        "hazard":     hazard_1h,
+        "incomplete": False,
+    }
+
+# -------------------------
+# MARKET BREADTH
+# -------------------------
+
+def compute_market_breadth(db: Session) -> dict:
+    bullish = neutral = bearish = 0
+    for coin in SUPPORTED_COINS:
+        record = (
+            db.query(MarketSummary)
+            .filter(
+                MarketSummary.coin == coin,
+                MarketSummary.timeframe == "1d",
+            )
+            .order_by(MarketSummary.created_at.desc())
+            .first()
+        )
+        if not record:
+            continue
+        n = REGIME_NUMERIC.get(record.label, 0)
+        if n > 0:   bullish += 1
+        elif n < 0: bearish += 1
+        else:       neutral += 1
+
+    total = bullish + neutral + bearish
+    if total == 0:
+        return {"bullish": 0, "neutral": 0, "bearish": 0, "breadth_score": 0}
+
+    return {
+        "bullish":       bullish,
+        "neutral":       neutral,
+        "bearish":       bearish,
+        "total":         total,
+        "breadth_score": round(((bullish - bearish) / total) * 100, 2),
+    }
+
+# ═══════════════════════════════════════════
+# ROUTES
+# ═══════════════════════════════════════════
+
+# ── Health ──────────────────────────────────
 
 @app.get("/health")
 def health():
     return {"status": "ok", "timestamp": datetime.datetime.utcnow()}
 
-# -------------------------
-# ROUTES — MARKET DATA
-# -------------------------
+# ── Update ──────────────────────────────────
+
+@app.get("/update-now")
+def update_now(
+    coin: str = "BTC",
+    timeframe: str = "1h",
+    secret: str = "",
+    db: Session = Depends(get_db),
+):
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported timeframe")
+    entry = update_market(coin, timeframe, db)
+    if not entry:
+        raise HTTPException(status_code=500, detail="Update failed")
+    return {
+        "status":    "updated",
+        "coin":      coin,
+        "timeframe": timeframe,
+        "label":     entry.label,
+        "score":     entry.score,
+    }
+
+
+@app.get("/update-all")
+def update_all(secret: str = "", db: Session = Depends(get_db)):
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid secret")
+    results = []
+    for coin in SUPPORTED_COINS:
+        for tf in SUPPORTED_TIMEFRAMES:
+            entry = update_market(coin, tf, db)
+            if entry:
+                results.append({
+                    "coin":      coin,
+                    "timeframe": tf,
+                    "label":     entry.label,
+                    "score":     entry.score,
+                })
+    return {"status": "updated", "count": len(results), "results": results}
+
+# ── Regime Stack ─────────────────────────────
+
+@app.get("/regime-stack")
+def regime_stack_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    auth_header = (
+        request.headers.get("authorization")
+        or request.headers.get("Authorization")
+    )
+    is_pro = resolve_pro_status(auth_header, db)
+    stack  = build_regime_stack(coin, db)
+
+    if stack["incomplete"]:
+        return {**stack, "pro_required": False}
+
+    # Fields always visible (free + pro)
+    base = {
+        "coin":       stack["coin"],
+        "macro":      {"label": stack["macro"]["label"]}     if stack["macro"]     else None,
+        "trend":      {"label": stack["trend"]["label"]}     if stack["trend"]     else None,
+        "execution":  {"label": stack["execution"]["label"]} if stack["execution"] else None,
+        "alignment":  stack["alignment"],
+        "direction":  stack["direction"],
+        "exposure":   stack["exposure"],
+        "shift_risk": stack["shift_risk"],
+    }
+
+    if not is_pro:
+        return {
+            **base,
+            "pro_required":     True,
+            "survival":         None,
+            "hazard":           None,
+            "trend_maturity":   None,
+            "percentile":       None,
+            "macro_coherence":  None,
+            "trend_coherence":  None,
+            "exec_coherence":   None,
+            "regime_age_hours": None,
+        }
+
+    # Pro — full data
+    age_1h    = current_age(db, coin, "1h")
+    avg_dur   = average_regime_duration(db, coin, "1h")
+    maturity  = trend_maturity_score(age_1h, avg_dur, stack["hazard"])
+    pct_rank  = percentile_rank(db, coin, stack["execution"]["score"], "1h")
+
+    return {
+        **base,
+        # Override macro/trend/execution with full objects for pro
+        "macro":      stack["macro"],
+        "trend":      stack["trend"],
+        "execution":  stack["execution"],
+        "pro_required":     False,
+        "survival":         stack["survival"],
+        "hazard":           stack["hazard"],
+        "trend_maturity":   maturity,
+        "percentile":       pct_rank,
+        "macro_coherence":  stack["macro"]["coherence"],
+        "trend_coherence":  stack["trend"]["coherence"],
+        "exec_coherence":   stack["execution"]["coherence"],
+        "regime_age_hours": round(age_1h, 2),
+    }
+
 
 @app.get("/market-overview")
 def market_overview(db: Session = Depends(get_db)):
-    result = []
+    result  = []
+    breadth = compute_market_breadth(db)
+
     for coin in SUPPORTED_COINS:
-        latest = (
-            db.query(MarketSummary)
-            .filter(MarketSummary.coin == coin)
-            .order_by(MarketSummary.created_at.desc())
-            .first()
-        )
-        if latest:
+        stack = build_regime_stack(coin, db)
+        if not stack["incomplete"]:
             result.append({
-                "coin": coin,
-                "score": latest.score,
-                "label": latest.label,
-                "coherence": latest.coherence,
-                "timestamp": latest.created_at,
+                "coin":       stack["coin"],
+                "macro":      stack["macro"]["label"]     if stack["macro"]     else None,
+                "trend":      stack["trend"]["label"]     if stack["trend"]     else None,
+                "execution":  stack["execution"]["label"] if stack["execution"] else None,
+                "alignment":  stack["alignment"],
+                "direction":  stack["direction"],
+                "exposure":   stack["exposure"],
+                "shift_risk": stack["shift_risk"],
             })
-    return {"data": result}
+
+    return {"data": result, "breadth": breadth}
 
 
 @app.get("/latest")
 def latest(coin: str = "BTC", db: Session = Depends(get_db)):
-    if coin not in SUPPORTED_COINS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported coin. Choose from {SUPPORTED_COINS}"
-        )
-
-    r = (
-        db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
-        .order_by(MarketSummary.created_at.desc())
-        .first()
-    )
-
-    if not r:
-        return {"message": "No data yet. Try /update-now first."}
-
-    return {
-        "coin": r.coin,
-        "score": r.score,
-        "label": r.label,
-        "coherence": r.coherence,
-        "momentum_4h": r.momentum_4h,
-        "momentum_24h": r.momentum_24h,
-        "volatility": r.volatility_val,
-        "timestamp": r.created_at,
-    }
-
-
-@app.get("/statistics")
-def statistics(
-    coin: str = "BTC",
-    db: Session = Depends(get_db),
-    authorization: Optional[str] = None,
-):
-    # Read Authorization header manually so it stays a GET request
-    # FastAPI note: use Request object to pull header cleanly
+    """Legacy endpoint — returns the most recent 1h record."""
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    latest_record = (
+    r = (
         db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1h",
+        )
         .order_by(MarketSummary.created_at.desc())
         .first()
     )
-
-    if not latest_record:
-        return {"message": "No data. Call /update-now first."}
-
-    survival = survival_probability(db, coin)
-    hazard = hazard_rate(db, coin)
-    percentile = percentile_rank(db, coin, latest_record.score)
-    exposure = exposure_recommendation(
-        latest_record.score, survival, hazard, latest_record.coherence
-    )
-    age = current_age(db, coin)
-    shift_risk = regime_shift_risk(hazard, survival, latest_record.coherence)
-    avg_dur = average_regime_duration(db, coin)
-    maturity = trend_maturity_score(age, avg_dur, hazard)
-
+    if not r:
+        return {"message": "No data yet."}
     return {
-        "coin": coin,
-        "score": latest_record.score,
-        "label": latest_record.label,
-        "coherence": latest_record.coherence,
-        "survival_probability_percent": survival,
-        "hazard_percent": hazard,
-        "percentile_rank_percent": percentile,
-        "exposure_recommendation_percent": exposure,
-        "regime_shift_risk_percent": shift_risk,
-        "trend_maturity_score": maturity,
-        "current_regime_age_hours": round(age, 2),
-        "timestamp": latest_record.created_at,
-        "pro_required": False,  # set by /statistics-gated below
+        "coin":         r.coin,
+        "score":        r.score,
+        "label":        r.label,
+        "coherence":    r.coherence,
+        "momentum_4h":  r.momentum_4h,
+        "momentum_24h": r.momentum_24h,
+        "volatility":   r.volatility_val,
+        "timeframe":    r.timeframe,
+        "timestamp":    r.created_at,
     }
 
 
@@ -509,79 +761,68 @@ def statistics_gated(
     db: Session = Depends(get_db),
 ):
     """
-    Pro-gated version of /statistics.
-    Frontend sends Authorization: Bearer <token>
-    Free users get basic fields only. Pro users get everything.
+    Backward-compatible endpoint.
+    Now delegates to regime-stack logic so the frontend
+    gets the full stacked response from one call.
+    """
+    return regime_stack_endpoint(request=request, coin=coin, db=db)
+
+
+@app.get("/statistics")
+def statistics(coin: str = "BTC", db: Session = Depends(get_db)):
+    """
+    Legacy ungated endpoint — kept so nothing breaks.
+    Returns single-timeframe data only.
     """
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    # Resolve pro status from header
-    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
-    is_pro = resolve_pro_status(auth_header, db)
-
-    latest_record = (
+    r = (
         db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
+        .filter(MarketSummary.coin == coin, MarketSummary.timeframe == "1h")
         .order_by(MarketSummary.created_at.desc())
         .first()
     )
-
-    if not latest_record:
-        return {"message": "No data. Call /update-now first."}
-
-    survival = survival_probability(db, coin)
-    hazard = hazard_rate(db, coin)
-    percentile = percentile_rank(db, coin, latest_record.score)
-    exposure = exposure_recommendation(
-        latest_record.score, survival, hazard, latest_record.coherence
-    )
-    age = current_age(db, coin)
-    shift_risk = regime_shift_risk(hazard, survival, latest_record.coherence)
-    avg_dur = average_regime_duration(db, coin)
+    if not r:
+        return {"message": "No data."}
+    survival = survival_probability(db, coin, "1h")
+    hazard   = hazard_rate(db, coin, "1h")
+    exposure = exposure_recommendation(r.score, survival, hazard, r.coherence)
+    age      = current_age(db, coin, "1h")
+    shift    = regime_shift_risk(hazard, survival, r.coherence)
+    avg_dur  = average_regime_duration(db, coin, "1h")
     maturity = trend_maturity_score(age, avg_dur, hazard)
-
-    # Free tier — visible fields
-    base_response = {
-        "coin": coin,
-        "score": latest_record.score,
-        "label": latest_record.label,
-        "exposure_recommendation_percent": exposure,
-        "regime_shift_risk_percent": shift_risk,
-        "current_regime_age_hours": round(age, 2),
-        "timestamp": latest_record.created_at,
-    }
-
-    if not is_pro:
-        # Return base fields + null pro fields so frontend
-        # knows the shape but sees nothing sensitive
-        return {
-            **base_response,
-            "pro_required": True,
-            "survival_probability_percent": None,
-            "hazard_percent": None,
-            "percentile_rank_percent": None,
-            "coherence": None,
-            "trend_maturity_score": None,
-        }
-
-    # Pro tier — full response
     return {
-        **base_response,
-        "pro_required": False,
-        "coherence": latest_record.coherence,
+        "coin":                        coin,
+        "score":                       r.score,
+        "label":                       r.label,
+        "coherence":                   r.coherence,
         "survival_probability_percent": survival,
-        "hazard_percent": hazard,
-        "percentile_rank_percent": percentile,
-        "trend_maturity_score": maturity,
+        "hazard_percent":              hazard,
+        "percentile_rank_percent":     percentile_rank(db, coin, r.score, "1h"),
+        "exposure_recommendation_percent": exposure,
+        "regime_shift_risk_percent":   shift,
+        "trend_maturity_score":        maturity,
+        "current_regime_age_hours":    round(age, 2),
+        "timestamp":                   r.created_at,
+        "pro_required":                False,
     }
 
 
 @app.get("/regime-history")
-def regime_history(coin: str = "BTC", limit: int = 48, db: Session = Depends(get_db)):
+def regime_history(
+    coin: str = "BTC",
+    timeframe: str = "1h",
+    limit: int = 48,
+    db: Session = Depends(get_db),
+):
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported timeframe")
     records = (
         db.query(MarketSummary)
-        .filter(MarketSummary.coin == coin)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == timeframe,
+        )
         .order_by(MarketSummary.created_at.desc())
         .limit(limit)
         .all()
@@ -590,9 +831,9 @@ def regime_history(coin: str = "BTC", limit: int = 48, db: Session = Depends(get
     return {
         "data": [
             {
-                "hour": i,
-                "score": r.score,
-                "label": r.label,
+                "hour":      i,
+                "score":     r.score,
+                "label":     r.label,
                 "coherence": r.coherence,
                 "timestamp": r.created_at,
             }
@@ -602,74 +843,39 @@ def regime_history(coin: str = "BTC", limit: int = 48, db: Session = Depends(get
 
 
 @app.get("/survival-curve")
-def survival_curve(coin: str = "BTC", db: Session = Depends(get_db)):
-    durations = regime_durations(db, coin)
+def survival_curve(
+    coin: str = "BTC",
+    timeframe: str = "1h",
+    db: Session = Depends(get_db),
+):
+    durations = regime_durations(db, coin, timeframe)
 
     if len(durations) < 5:
-        dummy = []
-        for h in range(0, 25):
-            s = max(0, 100 - h * 4)
-            hz = min(100, h * 4.5)
-            dummy.append({"hour": h, "survival": s, "hazard": hz})
-        return {"data": dummy, "source": "estimated"}
+        return {
+            "data": [
+                {"hour": h, "survival": max(0, 100 - h * 4), "hazard": min(100, h * 4.5)}
+                for h in range(0, 25)
+            ],
+            "source": "estimated",
+        }
 
-    max_duration = int(max(durations))
-    curve = []
-
-    for hour in range(0, max_duration + 1):
+    max_dur = int(max(durations))
+    curve   = []
+    for hour in range(0, max_dur + 1):
         survivors = [d for d in durations if d > hour]
-        surv_pct = (len(survivors) / len(durations)) * 100
+        surv_pct  = (len(survivors) / len(durations)) * 100
         hz = 0.0
-        if hour > 0 and len(survivors) > 0:
+        if hour > 0 and survivors:
             exited = [d for d in durations if hour - 1 < d <= hour]
-            hz = (len(exited) / len(survivors)) * 100
+            hz     = (len(exited) / len(survivors)) * 100
         curve.append({
-            "hour": hour,
+            "hour":     hour,
             "survival": round(surv_pct, 2),
-            "hazard": round(hz, 2),
+            "hazard":   round(hz, 2),
         })
-
     return {"data": curve, "source": "historical"}
 
-# -------------------------
-# ROUTES — UPDATE
-# -------------------------
-
-@app.get("/update-now")
-def update_now(coin: str = "BTC", secret: str = "", db: Session = Depends(get_db)):
-    if secret != UPDATE_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid secret")
-    if coin not in SUPPORTED_COINS:
-        raise HTTPException(status_code=400, detail="Unsupported coin")
-    entry = update_market(coin, db)
-    if not entry:
-        raise HTTPException(status_code=500, detail="Market update failed")
-    return {
-        "status": "updated",
-        "coin": coin,
-        "label": entry.label,
-        "score": entry.score,
-    }
-
-
-@app.get("/update-all")
-def update_all(secret: str = "", db: Session = Depends(get_db)):
-    if secret != UPDATE_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid secret")
-    results = []
-    for coin in SUPPORTED_COINS:
-        entry = update_market(coin, db)
-        if entry:
-            results.append({
-                "coin": coin,
-                "label": entry.label,
-                "score": entry.score,
-            })
-    return {"status": "updated", "results": results}
-
-# -------------------------
-# ROUTES — STRIPE
-# -------------------------
+# ── Stripe ──────────────────────────────────
 
 class CheckoutRequest(BaseModel):
     email: str = ""
@@ -685,12 +891,11 @@ def create_checkout_session(body: CheckoutRequest = CheckoutRequest()):
             "mode": "subscription",
             "line_items": [{"price": STRIPE_PRICE_ID, "quantity": 1}],
             "success_url": "https://chainpulse.pro/app?success=true",
-            "cancel_url": "https://chainpulse.pro/pricing",
+            "cancel_url":  "https://chainpulse.pro/pricing",
             "allow_promotion_codes": True,
         }
         if body.email:
             params["customer_email"] = body.email
-
         session = stripe.checkout.Session.create(**params)
         return {"url": session.url}
     except stripe.error.StripeError as e:
@@ -700,7 +905,7 @@ def create_checkout_session(body: CheckoutRequest = CheckoutRequest()):
 
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    payload = await request.body()
+    payload    = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
 
     if not STRIPE_WEBHOOK_SECRET:
@@ -714,12 +919,11 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     event_type = event["type"]
-    data = event["data"]["object"]
+    data       = event["data"]["object"]
 
-    # ── Successful checkout ──
     if event_type == "checkout.session.completed":
-        customer_email = data.get("customer_details", {}).get("email")
-        customer_id = data.get("customer")
+        customer_email  = data.get("customer_details", {}).get("email")
+        customer_id     = data.get("customer")
         subscription_id = data.get("subscription")
 
         if customer_email:
@@ -728,14 +932,12 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 user = User(email=customer_email)
                 db.add(user)
 
-            # Generate unique access token for this user
             access_token = str(uuid.uuid4())
-
-            user.subscription_status = "active"
-            user.stripe_customer_id = customer_id
+            user.subscription_status    = "active"
+            user.stripe_customer_id     = customer_id
             user.stripe_subscription_id = subscription_id
-            user.alerts_enabled = True
-            user.access_token = access_token
+            user.alerts_enabled         = True
+            user.access_token           = access_token
             db.commit()
 
             send_email(
@@ -745,22 +947,20 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             )
             logger.info(f"Pro activated: {customer_email}")
 
-    # ── Subscription cancelled or paused ──
     elif event_type in (
         "customer.subscription.deleted",
         "customer.subscription.paused",
     ):
-        subscription_id = data.get("id")
-        user = db.query(User).filter(
-            User.stripe_subscription_id == subscription_id
+        sub_id = data.get("id")
+        user   = db.query(User).filter(
+            User.stripe_subscription_id == sub_id
         ).first()
         if user:
             user.subscription_status = "inactive"
-            user.access_token = None  # revoke token immediately
+            user.access_token        = None
             db.commit()
             logger.info(f"Subscription deactivated: {user.email}")
 
-    # ── Payment failed ──
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
         user = db.query(User).filter(
@@ -780,8 +980,8 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                   </p>
                   <a href="https://chainpulse.pro/pricing"
                      style="display:inline-block;background:#fff;color:#000;
-                            padding:14px 28px;margin-top:24px;text-decoration:none;
-                            font-weight:bold;">
+                            padding:14px 28px;margin-top:24px;
+                            text-decoration:none;font-weight:bold;">
                     Update Payment
                   </a>
                 </div>
@@ -790,103 +990,113 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     return {"status": "received"}
 
-# -------------------------
-# EMAIL SYSTEM
-# -------------------------
+# ── Email ────────────────────────────────────
 
 def send_email(to_email: str, subject: str, html_content: str):
     if not RESEND_API_KEY:
         logger.warning("RESEND_API_KEY not set — email skipped")
         return
-
     try:
-        response = requests.post(
+        r = requests.post(
             "https://api.resend.com/emails",
             headers={
                 "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
+                "Content-Type":  "application/json",
             },
             json={
-                "from": "ChainPulse <alerts@chainpulse.pro>",
-                "to": [to_email],
+                "from":    "ChainPulse <alerts@chainpulse.pro>",
+                "to":      [to_email],
                 "subject": subject,
-                "html": html_content,
+                "html":    html_content,
             },
             timeout=8,
         )
-        response.raise_for_status()
+        r.raise_for_status()
         logger.info(f"Email sent to {to_email}")
     except Exception as e:
-        logger.error(f"Email send failed to {to_email}: {e}")
+        logger.error(f"Email failed to {to_email}: {e}")
 
 
 def welcome_email_html(email: str, access_token: str) -> str:
-    dashboard_url = f"https://chainpulse.pro/app?token={access_token}"
+    url = f"https://chainpulse.pro/app?token={access_token}"
     return f"""
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;
                 background:#000;color:#fff;padding:40px;">
       <div style="font-size:11px;color:#555;text-transform:uppercase;
-                  letter-spacing:2px;margin-bottom:16px;">
-        ChainPulse Pro
-      </div>
-      <h1 style="font-size:24px;margin-bottom:8px;">
-        Your Pro Access Is Active
-      </h1>
+                  letter-spacing:2px;margin-bottom:16px;">ChainPulse Pro</div>
+      <h1 style="font-size:24px;margin-bottom:8px;">Your Pro Access Is Active</h1>
       <p style="color:#999;margin-bottom:32px;">
-        Click below to open your Pro dashboard. This link logs you in automatically.
-        Bookmark it.
+        Click below to open your Pro dashboard.
+        This link logs you in automatically. Bookmark it.
       </p>
-      <a href="{dashboard_url}"
+      <a href="{url}"
          style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
                 text-decoration:none;font-weight:bold;border-radius:4px;">
         Open Pro Dashboard
       </a>
       <div style="margin-top:40px;border-top:1px solid #222;padding-top:24px;">
-        <p style="color:#555;font-size:12px;margin-bottom:12px;">
-          What you now have access to:
-        </p>
         <ul style="color:#666;font-size:12px;line-height:2.2;padding-left:16px;">
-          <li>Regime survival curve and hazard modeling</li>
-          <li>Coherence index and trend maturity score</li>
-          <li>Strength percentile ranking</li>
-          <li>Real-time shift alerts via email</li>
+          <li>Multi-timeframe regime stack — Macro / Trend / Execution</li>
+          <li>Regime alignment score</li>
+          <li>Survival curve and hazard modeling</li>
+          <li>Coherence index per timeframe</li>
+          <li>Trend maturity score</li>
+          <li>Real-time shift alerts</li>
           <li>Daily morning regime brief</li>
           <li>Multi-asset: BTC, ETH, SOL, BNB, AVAX</li>
         </ul>
       </div>
-      <p style="color:#333;font-size:11px;margin-top:40px;
-                border-top:1px solid #111;padding-top:20px;">
-        ChainPulse is a decision-support framework. Not financial advice.
+      <p style="color:#333;font-size:11px;margin-top:40px;">
+        ChainPulse. Not financial advice.
       </p>
     </div>
     """
 
 
-def regime_alert_html(
-    coin: str, label: str, shift_risk: float, exposure: float
-) -> str:
+def regime_alert_html(coin: str, stack: dict) -> str:
+    macro_l    = stack["macro"]["label"]     if stack.get("macro")     else "—"
+    trend_l    = stack["trend"]["label"]     if stack.get("trend")     else "—"
+    exec_l     = stack["execution"]["label"] if stack.get("execution") else "—"
+    align      = stack.get("alignment",  0)
+    shift_risk = stack.get("shift_risk", 0)
+    exposure   = stack.get("exposure",   0)
+
     return f"""
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;
                 background:#000;color:#fff;padding:40px;">
       <div style="font-size:11px;color:#555;text-transform:uppercase;
-                  letter-spacing:2px;margin-bottom:16px;">
-        ChainPulse Alert
-      </div>
-      <h2 style="color:#f87171;margin-bottom:8px;">
+                  letter-spacing:2px;margin-bottom:16px;">ChainPulse Alert</div>
+      <h2 style="color:#f87171;margin-bottom:16px;">
         ⚠ Regime Shift Risk Elevated — {coin}
       </h2>
-      <p style="color:#999;">
-        Current Regime: <strong style="color:#fff;">{label}</strong>
-      </p>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+        <tr>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#555;font-size:12px;">Macro (1D)</td>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#fff;text-align:right;">{macro_l}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#555;font-size:12px;">Trend (4H)</td>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#fff;text-align:right;">{trend_l}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#555;font-size:12px;">Execution (1H)</td>
+          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                     color:#fff;text-align:right;">{exec_l}</td>
+        </tr>
+        <tr>
+          <td style="padding:10px 0;color:#555;font-size:12px;">Alignment</td>
+          <td style="padding:10px 0;color:#fff;text-align:right;">{align}%</td>
+        </tr>
+      </table>
       <p style="color:#999;">
         Shift Risk: <strong style="color:#f87171;">{shift_risk}%</strong>
-      </p>
-      <p style="color:#999;">
+        &nbsp;·&nbsp;
         Recommended Exposure: <strong style="color:#fff;">{exposure}%</strong>
-      </p>
-      <p style="color:#666;margin-top:20px;font-size:13px;">
-        Statistical hazard has elevated beyond historical norms.
-        Consider reducing position size or tightening stops.
       </p>
       <a href="https://chainpulse.pro/app"
          style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
@@ -894,47 +1104,44 @@ def regime_alert_html(
         View Dashboard
       </a>
       <p style="color:#333;font-size:11px;margin-top:40px;">
-        ChainPulse. Not financial advice. Manage your own risk.
+        ChainPulse. Not financial advice.
       </p>
     </div>
     """
 
 
-def morning_email_html(snapshots: list, access_token: str) -> str:
-    dashboard_url = (
+def morning_email_html(stacks: list, access_token: str) -> str:
+    url  = (
         f"https://chainpulse.pro/app?token={access_token}"
-        if access_token
-        else "https://chainpulse.pro/app"
+        if access_token else "https://chainpulse.pro/app"
     )
-
     rows = ""
-    for s in snapshots:
+    for s in stacks:
         risk_color = (
-            "#f87171" if s["shift_risk"] > 70
-            else "#facc15" if s["shift_risk"] > 45
+            "#f87171" if (s.get("shift_risk") or 0) > 70
+            else "#facc15" if (s.get("shift_risk") or 0) > 45
             else "#4ade80"
         )
+        macro_l = s["macro"]["label"]     if s.get("macro")     else "—"
+        exec_l  = s["execution"]["label"] if s.get("execution") else "—"
         rows += f"""
         <tr>
           <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;
-                     color:#fff;font-weight:600;">
-            {s["coin"]}
-          </td>
-          <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;color:#999;">
-            {s["label"]}
-          </td>
-          <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;color:#fff;">
-            {s["exposure"]}%
-          </td>
+                     color:#fff;font-weight:600;">{s["coin"]}</td>
+          <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;
+                     color:#999;font-size:12px;">{macro_l}</td>
+          <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;
+                     color:#999;font-size:12px;">{exec_l}</td>
+          <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;
+                     color:#fff;">{s.get("exposure","—")}%</td>
           <td style="padding:12px 8px;border-bottom:1px solid #1f1f1f;
                      color:{risk_color};font-weight:600;">
-            {s["shift_risk"]}%
+            {s.get("shift_risk","—")}%
           </td>
         </tr>
         """
-
     return f"""
-    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;
+    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;
                 background:#000;color:#fff;padding:40px;">
       <div style="font-size:11px;color:#555;text-transform:uppercase;
                   letter-spacing:2px;margin-bottom:16px;">
@@ -942,47 +1149,38 @@ def morning_email_html(snapshots: list, access_token: str) -> str:
       </div>
       <h1 style="font-size:22px;margin-bottom:8px;">Daily Regime Snapshot</h1>
       <p style="color:#666;font-size:13px;margin-bottom:32px;">
-        Current regime conditions across tracked assets.
+        Multi-timeframe regime conditions across tracked assets.
       </p>
-
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr>
             <th style="text-align:left;padding:8px;color:#444;font-size:11px;
-                       text-transform:uppercase;letter-spacing:1px;
-                       border-bottom:1px solid #222;">Asset</th>
+                       text-transform:uppercase;border-bottom:1px solid #222;">Asset</th>
             <th style="text-align:left;padding:8px;color:#444;font-size:11px;
-                       text-transform:uppercase;letter-spacing:1px;
-                       border-bottom:1px solid #222;">Regime</th>
+                       text-transform:uppercase;border-bottom:1px solid #222;">Macro</th>
             <th style="text-align:left;padding:8px;color:#444;font-size:11px;
-                       text-transform:uppercase;letter-spacing:1px;
-                       border-bottom:1px solid #222;">Exposure</th>
+                       text-transform:uppercase;border-bottom:1px solid #222;">Execution</th>
             <th style="text-align:left;padding:8px;color:#444;font-size:11px;
-                       text-transform:uppercase;letter-spacing:1px;
-                       border-bottom:1px solid #222;">Shift Risk</th>
+                       text-transform:uppercase;border-bottom:1px solid #222;">Exposure</th>
+            <th style="text-align:left;padding:8px;color:#444;font-size:11px;
+                       text-transform:uppercase;border-bottom:1px solid #222;">Shift Risk</th>
           </tr>
         </thead>
-        <tbody>
-          {rows}
-        </tbody>
+        <tbody>{rows}</tbody>
       </table>
-
-      <a href="{dashboard_url}"
+      <a href="{url}"
          style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
                 margin-top:32px;text-decoration:none;font-weight:bold;border-radius:4px;">
         Open Dashboard
       </a>
-
       <p style="color:#333;font-size:11px;margin-top:40px;
                 border-top:1px solid #111;padding-top:20px;">
-        ChainPulse. Not financial advice. Manage your own risk.
+        ChainPulse. Not financial advice.
       </p>
     </div>
     """
 
-# -------------------------
-# ROUTES — ALERTS
-# -------------------------
+# ── Alert dispatch ───────────────────────────
 
 @app.get("/send-alerts")
 def send_alerts(secret: str = "", db: Session = Depends(get_db)):
@@ -996,39 +1194,23 @@ def send_alerts(secret: str = "", db: Session = Depends(get_db)):
 
     sent = 0
     for coin in SUPPORTED_COINS:
-        latest_record = (
-            db.query(MarketSummary)
-            .filter(MarketSummary.coin == coin)
-            .order_by(MarketSummary.created_at.desc())
-            .first()
-        )
-        if not latest_record:
+        stack = build_regime_stack(coin, db)
+        if stack["incomplete"]:
             continue
-
-        survival = survival_probability(db, coin)
-        hazard = hazard_rate(db, coin)
-        shift_risk = regime_shift_risk(hazard, survival, latest_record.coherence)
-        exposure = exposure_recommendation(
-            latest_record.score, survival, hazard, latest_record.coherence
-        )
-
-        if shift_risk < 70:
+        if (stack.get("shift_risk") or 0) < 70:
             continue
 
         for user in pro_users:
             if user.last_alert_sent:
-                hours_since = (
+                hrs = (
                     datetime.datetime.utcnow() - user.last_alert_sent
                 ).total_seconds() / 3600
-                if hours_since < 12:
+                if hrs < 12:
                     continue
-
             send_email(
                 user.email,
                 f"ChainPulse Alert — {coin} Regime Shift Risk Elevated",
-                regime_alert_html(
-                    coin, latest_record.label, shift_risk, exposure
-                ),
+                regime_alert_html(coin, stack),
             )
             user.last_alert_sent = datetime.datetime.utcnow()
             db.commit()
@@ -1047,46 +1229,24 @@ def send_morning_email(secret: str = "", db: Session = Depends(get_db)):
         User.alerts_enabled == True,
     ).all()
 
-    # Build snapshot for BTC, ETH, SOL
-    snapshots = []
+    stacks = []
     for coin in ["BTC", "ETH", "SOL"]:
-        record = (
-            db.query(MarketSummary)
-            .filter(MarketSummary.coin == coin)
-            .order_by(MarketSummary.created_at.desc())
-            .first()
-        )
-        if not record:
-            continue
-
-        survival = survival_probability(db, coin)
-        hazard = hazard_rate(db, coin)
-        exposure = exposure_recommendation(
-            record.score, survival, hazard, record.coherence
-        )
-        shift_risk = regime_shift_risk(hazard, survival, record.coherence)
-
-        snapshots.append({
-            "coin": coin,
-            "label": record.label,
-            "exposure": exposure,
-            "shift_risk": shift_risk,
-        })
+        stack = build_regime_stack(coin, db)
+        if not stack["incomplete"]:
+            stacks.append(stack)
 
     sent = 0
     for user in pro_users:
         send_email(
             user.email,
             "ChainPulse Morning Regime Brief",
-            morning_email_html(snapshots, user.access_token or ""),
+            morning_email_html(stacks, user.access_token or ""),
         )
         sent += 1
 
     return {"status": "sent", "count": sent}
 
-# -------------------------
-# ROUTES — SUBSCRIBE / CONFIRM
-# -------------------------
+# ── Subscribe / Confirm ──────────────────────
 
 class SubscribeRequest(BaseModel):
     email: str
@@ -1095,8 +1255,7 @@ class SubscribeRequest(BaseModel):
 @app.post("/subscribe")
 def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
-
-    user = db.query(User).filter(User.email == email).first()
+    user  = db.query(User).filter(User.email == email).first()
     if not user:
         user = User(
             email=email,
@@ -1124,7 +1283,6 @@ def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
         </div>
         """,
     )
-
     return {"status": "confirmation_sent"}
 
 
@@ -1137,9 +1295,6 @@ def confirm(email: str, db: Session = Depends(get_db)):
         return {"status": "confirmed", "email": email}
     raise HTTPException(status_code=404, detail="Email not found")
 
-# -------------------------
-# ROUTES — SAMPLE REPORT
-# -------------------------
 
 @app.get("/sample-report")
 def sample_report():
