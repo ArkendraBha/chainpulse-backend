@@ -1,0 +1,26 @@
+name: ChainPulse Market Cron
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # Every hour — update market data
+    - cron: "15 * * * *"  # Every hour at :15 — send alerts
+  workflow_dispatch:       # Allows manual trigger from GitHub UI
+
+jobs:
+
+  update-market:
+    name: Update Market Data
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update all coins
+        run: |
+          curl -f "https://chainpulse-backend-2xok.onrender.com/update-all?secret=${{ secrets.UPDATE_SECRET }}"
+
+  send-alerts:
+    name: Send Regime Alerts
+    runs-on: ubuntu-latest
+    needs: update-market    # waits for update to finish first
+    steps:
+      - name: Send shift alerts
+        run: |
+          curl -f "https://chainpulse-backend-2xok.onrender.com/send-alerts?secret=${{ secrets.UPDATE_SECRET }}"
