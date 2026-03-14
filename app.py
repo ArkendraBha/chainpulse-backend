@@ -1302,3 +1302,15 @@ def sample_report():
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Report not found")
     return FileResponse(path, media_type="application/pdf")
+
+@app.get("/debug-prices")
+def debug_prices(coin: str = "BTC", interval: str = "1h"):
+    prices, volumes = get_klines(coin, interval, limit=120)
+    return {
+        "coin":         coin,
+        "interval":     interval,
+        "price_count":  len(prices),
+        "volume_count": len(volumes),
+        "last_price":   prices[-1] if prices else None,
+        "first_price":  prices[0]  if prices else None,
+    }
