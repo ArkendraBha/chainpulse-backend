@@ -99,7 +99,7 @@ def get_db():
 # CONSTANTS
 # -------------------------
 
-SUPPORTED_COINS      = ["BTC", "ETH", "SOL", "BNB", "AVAX"]
+SUPPORTED_COINS = ["BTC", "ETH", "SOL", "BNB", "AVAX", "LINK", "ADA"]
 SUPPORTED_TIMEFRAMES = ["1h", "4h", "1d"]
 
 TIMEFRAME_LABELS = {
@@ -173,6 +173,621 @@ def volatility(prices: list, period: int = 20) -> float:
     var    = sum((p - mean) ** 2 for p in subset) / len(subset)
     return math.sqrt(var)
 
+def regime_transition_matrix(db: Session, coin: str, timeframe: str = "1h") -> dict:
+    """
+    Builds a simplified Markov transition matrix from historical regime sequences.
+    For each regime state, counts how many times it transitioned to each other state.
+    Returns probability distribution of next-state given current state.
+    """
+    records = get_history(db, coin, timeframe)
+    if len(records) < 10:
+        return None
+
+    STATES = ["Strong Risk-On", "Risk-On", "Neutral", "Risk-Off", "Strong Risk-Off"]
+
+    # Count transitions
+    transitions = {s: {t: 0 for t in STATES} for s in STATES}
+    for i in range(len(records) - 1):
+        current = records[i].label
+        nxt     = records[i + 1].label
+        if current in transitions and nxt in transitions:
+            transitions[current][nxt] += 1
+
+    # Current state
+    current_state = records[-1].label if records else "Neutral"
+
+    # Convert to probabilities
+    row   = transitions.get(current_state, {})
+    total = sum(row.values())
+
+    if total == 0:
+        # No history — uniform distribution
+        probs = {s: round(100 / len(STATES), 1) for s in STATES}
+    else:
+        probs = {
+            s: round((row.get(s, 0) / total) * 100, 1)
+            for s in STATES
+        }
+
+    # Sort by probability descending
+    sorted_probs = dict(
+        sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    return {
+        "current_state":    current_state,
+        "transitions":      sorted_probs,
+        "sample_size":      total,
+        "data_sufficient":  total >= 10,
+    }
+# ─────────────────────────────────────────────────────
+# VOLATILITY ENVIRONMENT
+# ─────────────────────────────────────────────────────
+
+def volatility_environment(coin: str, db: Session) -> dict:
+    """
+    Classifies the current volatility and trend stability environment
+    using live price data across timeframes.
+    """
+    prices_1h, _ = get_klines(coin, "1h", limit=48)
+    prices_1d, _ = get_klines(coin, "1d", limit=30)
+
+    if not prices_1h or not prices_1d:
+        return None
+
+    # Current vol (1h candles, 24-period)
+    vol_1h = volatility(prices_1h, period=24)
+
+    # Historical vol baseline (1d candles, 20-period)
+    vol_1d = volatility(prices_1d, period=20)
+
+    # Normalised vol ratio
+    vol_ratio = vol_1h / (vol_1d + 0.0001)
+
+    # Volatility regime classification
+    if vol_ratio > 1.5:
+        vol_label = "Extreme"
+        vol_score = 90
+    elif vol_ratio > 1.0:
+        vol_label = "Elevated"
+        vol_score = 65
+    elif vol_ratio > 0.5:
+        vol_label = "Moderate"
+        vol_score = 40
+    else:
+        vol_label = "Low"
+        vol_score = 15
+
+    # Trend stability — how consistent is the direction?
+    if len(prices_1h) >= 24:
+        returns = [
+            (prices_1h[i] - prices_1h[i - 1]) / prices_1h[i - 1]
+            for i in range(1, 24)
+        ]
+        positive = sum(1 for r in returns if r > 0)
+        stability_pct = round((positive / len(returns)) * 100, 1)
+
+        if stability_pct > 65:
+            stability_label = "Strong"
+        elif stability_pct > 50:
+            stability_label = "Moderate"
+        elif stability_pct > 35:
+            stability_label = "Weak"
+        else:
+            stability_label = "Deteriorating"
+    else:
+        stability_pct   = 50
+        stability_label = "Insufficient data"
+
+    # Market stress composite
+    stress_score = round(
+        vol_score * 0.6 + (100 - stability_pct) * 0.4, 1
+    )
+
+    if stress_score > 70:
+        stress_label = "High"
+    elif stress_score > 40:
+        stress_label = "Moderate"
+    else:
+        stress_label = "Low"
+
+    # Liquidity proxy — volume consistency
+    _, volumes = get_klines(coin, "1h", limit=24)
+    if volumes and len(volumes) >= 10:
+        avg_vol   = sum(volumes) / len(volumes)
+        recent_vol = sum(volumes[-6:]) / 6
+        liq_ratio  = recent_vol / (avg_vol + 0.0001)
+        if liq_ratio > 1.3:
+            liquidity_label = "High"
+        elif liq_ratio > 0.7:
+            liquidity_label = "Normal"
+        else:
+            liquidity_label = "Thin"
+    else:
+        liquidity_label = "Unknown"
+
+    return {
+        "volatility_label":  vol_label,
+        "volatility_score":  vol_score,
+        "stability_label":   stability_label,
+        "stability_score":   round(stability_pct, 1),
+        "stress_label":      stress_label,
+        "stress_score":      round(stress_score, 1),
+        "liquidity_label":   liquidity_label,
+    }
+
+
+# ─────────────────────────────────────────────────────
+# CORRELATION MONITOR
+# ─────────────────────────────────────────────────────
+
+def compute_correlation(prices_a: list, prices_b: list, period: int = 24) -> float:
+    """Pearson correlation between two price return series."""
+    if len(prices_a) < period + 1 or len(prices_b) < period + 1:
+        return None
+
+    def returns(prices):
+        return [
+            (prices[i] - prices[i - 1]) / prices[i - 1]
+            for i in range(len(prices) - period, len(prices))
+        ]
+
+    ra = returns(prices_a)
+    rb = returns(prices_b)
+
+    if len(ra) != len(rb):
+        return None
+
+    mean_a = sum(ra) / len(ra)
+    mean_b = sum(rb) / len(rb)
+
+    num   = sum((a - mean_a) * (b - mean_b) for a, b in zip(ra, rb))
+    den_a = math.sqrt(sum((a - mean_a) ** 2 for a in ra))
+    den_b = math.sqrt(sum((b - mean_b) ** 2 for b in rb))
+
+    if den_a == 0 or den_b == 0:
+        return None
+
+    return round(num / (den_a * den_b), 3)
+
+
+def build_correlation_matrix(db: Session) -> dict:
+    """
+    Computes pairwise correlation between BTC, ETH, SOL returns.
+    Flags breakdown when correlation drops significantly.
+    """
+    coins_to_correlate = ["BTC", "ETH", "SOL"]
+    price_map = {}
+
+    for coin in coins_to_correlate:
+        prices, _ = get_klines(coin, "1h", limit=50)
+        if prices:
+            price_map[coin] = prices
+
+    pairs   = []
+    alerts  = []
+
+    coin_list = list(price_map.keys())
+    for i in range(len(coin_list)):
+        for j in range(i + 1, len(coin_list)):
+            a = coin_list[i]
+            b = coin_list[j]
+            corr = compute_correlation(price_map[a], price_map[b])
+            if corr is not None:
+                pairs.append({
+                    "pair":        f"{a}-{b}",
+                    "correlation": corr,
+                    "label": (
+                        "Strong"   if abs(corr) > 0.8 else
+                        "Moderate" if abs(corr) > 0.5 else
+                        "Weak"
+                    ),
+                })
+                # Alert on correlation breakdown
+                if corr < 0.4:
+                    alerts.append(
+                        f"{a}-{b} correlation breakdown detected ({corr})"
+                    )
+
+    return {
+        "pairs":  pairs,
+        "alerts": alerts,
+    }
+
+
+# ─────────────────────────────────────────────────────
+# REGIME CONFIDENCE SCORE
+# ─────────────────────────────────────────────────────
+
+def regime_confidence_score(
+    alignment:    float,
+    survival:     float,
+    coherence:    float,
+    breadth_score: float,
+) -> dict:
+    """
+    Composite confidence score combining all quality signals.
+    High confidence = strong, well-aligned, persistent regime.
+    """
+    # Normalise breadth_score from -100/+100 to 0/100
+    breadth_norm = (breadth_score + 100) / 2
+
+    # Weighted composite
+    confidence = round(
+        alignment    * 0.30 +
+        survival     * 0.25 +
+        abs(coherence) * 0.25 +
+        breadth_norm * 0.20,
+        1,
+    )
+    confidence = min(100, max(0, confidence))
+
+    if confidence > 75:
+        label = "High"
+        desc  = "Strong regime — elevated conviction warranted"
+    elif confidence > 50:
+        label = "Moderate"
+        desc  = "Developing regime — standard position sizing"
+    elif confidence > 30:
+        label = "Low"
+        desc  = "Weak regime — reduce size, widen stops"
+    else:
+        label = "Very Low"
+        desc  = "No clear regime — minimal exposure only"
+
+    return {
+        "score":      confidence,
+        "label":      label,
+        "description": desc,
+        "components": {
+            "alignment":   round(alignment, 1),
+            "survival":    round(survival, 1),
+            "coherence":   round(abs(coherence), 1),
+            "breadth":     round(breadth_norm, 1),
+        },
+    }
+
+
+# ─────────────────────────────────────────────────────
+# PORTFOLIO ALLOCATOR (pure calculation — no DB needed)
+# ─────────────────────────────────────────────────────
+
+def portfolio_allocation(
+    account_size:     float,
+    exposure_pct:     float,
+    confidence_score: float,
+    strategy_mode:    str = "balanced",   # conservative | balanced | aggressive
+) -> dict:
+    """
+    Given account size and regime data, return suggested capital allocation.
+    """
+    # Strategy mode multipliers
+    mode_mult = {
+        "conservative": 0.70,
+        "balanced":     1.00,
+        "aggressive":   1.25,
+    }
+    mult = mode_mult.get(strategy_mode, 1.0)
+
+    # Adjusted exposure
+    adj_exposure = min(95, exposure_pct * mult)
+    deployed     = round(account_size * adj_exposure / 100, 2)
+    cash         = round(account_size - deployed, 2)
+
+    # Split deployed capital
+    # Higher confidence → more in active swing trades
+    swing_pct = 0.35 + (confidence_score / 100) * 0.25   # 35–60%
+    spot_pct  = 1 - swing_pct
+
+    return {
+        "account_size":       account_size,
+        "strategy_mode":      strategy_mode,
+        "adjusted_exposure":  round(adj_exposure, 1),
+        "deployed_capital":   deployed,
+        "cash_reserve":       cash,
+        "spot_allocation":    round(deployed * spot_pct, 2),
+        "swing_allocation":   round(deployed * swing_pct, 2),
+        "cash_pct":           round((cash / account_size) * 100, 1),
+    }
+
+
+# ─────────────────────────────────────────────────────
+# RISK EVENT CALENDAR (static — can be made dynamic)
+# ─────────────────────────────────────────────────────
+
+RISK_EVENTS = [
+    {"name": "FOMC Meeting",     "type": "macro",   "impact": "High"},
+    {"name": "CPI Release",      "type": "macro",   "impact": "High"},
+    {"name": "Options Expiry",   "type": "market",  "impact": "Medium"},
+    {"name": "ETF Flow Report",  "type": "market",  "impact": "Medium"},
+    {"name": "BTC Halving",      "type": "crypto",  "impact": "High"},
+    {"name": "Fed Minutes",      "type": "macro",   "impact": "Medium"},
+    {"name": "PCE Inflation",    "type": "macro",   "impact": "High"},
+]
+
+
+# ═══════════════════════════════════════════
+# NEW ROUTES
+# ═══════════════════════════════════════════
+
+@app.get("/regime-transitions")
+def regime_transitions(
+    coin: str = "BTC",
+    timeframe: str = "1h",
+    db: Session = Depends(get_db),
+):
+    """Markov regime transition probabilities."""
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    result = regime_transition_matrix(db, coin, timeframe)
+    if result is None:
+        return {
+            "current_state":   "Insufficient data",
+            "transitions":     {},
+            "data_sufficient": False,
+        }
+    return result
+
+
+@app.get("/volatility-environment")
+def volatility_env(
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    """Volatility, stability, stress and liquidity environment."""
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    result = volatility_environment(coin, db)
+    if result is None:
+        return {"error": "Insufficient data"}
+    return result
+
+
+@app.get("/correlation-matrix")
+def correlation_matrix_endpoint(db: Session = Depends(get_db)):
+    """Pairwise correlations + breakdown alerts."""
+    return build_correlation_matrix(db)
+
+
+@app.get("/regime-confidence")
+def regime_confidence_endpoint(
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    """Composite regime confidence score."""
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    stack   = build_regime_stack(coin, db)
+    breadth = compute_market_breadth(db)
+
+    if stack["incomplete"]:
+        return {"error": "Insufficient regime data"}
+
+    survival_val  = stack.get("survival") or 50.0
+    coherence_val = 0.0
+    if stack.get("execution") and stack["execution"].get("coherence"):
+        coherence_val = stack["execution"]["coherence"]
+
+    confidence = regime_confidence_score(
+        alignment    = stack["alignment"] or 0,
+        survival     = survival_val,
+        coherence    = coherence_val,
+        breadth_score = breadth.get("breadth_score", 0),
+    )
+    return {**confidence, "coin": coin}
+
+
+@app.post("/portfolio-allocator")
+def portfolio_allocator_endpoint(
+    account_size:  float = 10000,
+    strategy_mode: str   = "balanced",
+    coin:          str   = "BTC",
+    db: Session = Depends(get_db),
+):
+    """
+    Returns suggested capital allocation based on current regime.
+    account_size: user portfolio in USD
+    strategy_mode: conservative | balanced | aggressive
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if strategy_mode not in ("conservative", "balanced", "aggressive"):
+        raise HTTPException(status_code=400, detail="Invalid strategy mode")
+    if account_size <= 0:
+        raise HTTPException(status_code=400, detail="Invalid account size")
+
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"error": "Insufficient data"}
+
+    breadth     = compute_market_breadth(db)
+    survival_v  = stack.get("survival") or 50.0
+    coherence_v = 0.0
+    if stack.get("execution") and stack["execution"].get("coherence"):
+        coherence_v = stack["execution"]["coherence"]
+
+    confidence = regime_confidence_score(
+        alignment    = stack["alignment"] or 0,
+        survival     = survival_v,
+        coherence    = coherence_v,
+        breadth_score = breadth.get("breadth_score", 0),
+    )
+
+    allocation = portfolio_allocation(
+        account_size     = account_size,
+        exposure_pct     = stack["exposure"] or 5,
+        confidence_score = confidence["score"],
+        strategy_mode    = strategy_mode,
+    )
+
+    return {
+        **allocation,
+        "regime":     stack["execution"]["label"] if stack.get("execution") else "—",
+        "confidence": confidence["score"],
+        "alignment":  stack["alignment"],
+    }
+
+
+@app.get("/risk-events")
+def risk_events():
+    """Static risk event calendar."""
+    return {"events": RISK_EVENTS}
+
+
+@app.get("/full-intelligence")
+def full_intelligence(
+    request: Request,
+    coin: str = "BTC",
+    db: Session  = Depends(get_db),
+):
+    """
+    Single endpoint that returns everything needed for the dashboard.
+    Reduces frontend from 5 fetches to 1.
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    auth_header = (
+        request.headers.get("authorization")
+        or request.headers.get("Authorization")
+    )
+    is_pro = resolve_pro_status(auth_header, db)
+
+    # Gather all data
+    stack     = build_regime_stack(coin, db)
+    breadth   = compute_market_breadth(db)
+    vol_env   = volatility_environment(coin, db)
+    corr      = build_correlation_matrix(db)
+    overview  = []
+
+    for c in SUPPORTED_COINS:
+        s = build_regime_stack(c, db)
+        if not s["incomplete"]:
+            overview.append({
+                "coin":       s["coin"],
+                "macro":      s["macro"]["label"]     if s["macro"]     else None,
+                "trend":      s["trend"]["label"]     if s["trend"]     else None,
+                "execution":  s["execution"]["label"] if s["execution"] else None,
+                "alignment":  s["alignment"],
+                "direction":  s["direction"],
+                "exposure":   s["exposure"],
+                "shift_risk": s["shift_risk"],
+            })
+
+    # Confidence score (needs survival — use fallback if free)
+    survival_v  = stack.get("survival") or 50.0
+    coherence_v = 0.0
+    if stack.get("execution") and stack["execution"].get("coherence"):
+        coherence_v = stack["execution"]["coherence"]
+
+    confidence = regime_confidence_score(
+        alignment    = stack.get("alignment") or 0,
+        survival     = survival_v,
+        coherence    = coherence_v,
+        breadth_score = breadth.get("breadth_score", 0),
+    )
+
+    # Transitions
+    transitions = regime_transition_matrix(db, coin, "1h")
+
+    # History (1h)
+    history_records = (
+        db.query(MarketSummary)
+        .filter(MarketSummary.coin == coin, MarketSummary.timeframe == "1h")
+        .order_by(MarketSummary.created_at.desc())
+        .limit(48)
+        .all()
+    )
+    history_records.reverse()
+    history = [
+        {
+            "hour":      i,
+            "score":     r.score,
+            "label":     r.label,
+            "coherence": r.coherence,
+            "timestamp": r.created_at,
+        }
+        for i, r in enumerate(history_records)
+    ]
+
+    # Survival curve
+    durations = regime_durations(db, coin, "1h")
+    age_1h    = current_age(db, coin, "1h")
+    if len(durations) < 5:
+        curve = [
+            {"hour": h, "survival": max(0, 100 - h * 4), "hazard": min(100, h * 4.5)}
+            for h in range(25)
+        ]
+    else:
+        max_dur = int(max(durations))
+        curve   = []
+        for hour in range(max_dur + 1):
+            survivors = [d for d in durations if d > hour]
+            surv_pct  = (len(survivors) / len(durations)) * 100
+            hz = 0.0
+            if hour > 0 and survivors:
+                exited = [d for d in durations if hour - 1 < d <= hour]
+                hz     = (len(exited) / len(survivors)) * 100
+            curve.append({
+                "hour":     hour,
+                "survival": round(surv_pct, 2),
+                "hazard":   round(hz, 2),
+            })
+
+    # Regime age metadata
+    avg_dur  = average_regime_duration(db, coin, "1h")
+    maturity_pct = trend_maturity_score(age_1h, avg_dur, stack.get("hazard") or 0)
+    maturity_label = (
+        "Early Phase"    if maturity_pct < 25 else
+        "Mid Phase"      if maturity_pct < 55 else
+        "Late Phase"     if maturity_pct < 80 else
+        "Overextended"
+    )
+
+    # Build base response (free tier)
+    base_stack = {
+        "coin":       stack["coin"],
+        "macro":      {"label": stack["macro"]["label"]}     if stack.get("macro")     else None,
+        "trend":      {"label": stack["trend"]["label"]}     if stack.get("trend")     else None,
+        "execution":  {"label": stack["execution"]["label"]} if stack.get("execution") else None,
+        "alignment":  stack["alignment"],
+        "direction":  stack["direction"],
+        "exposure":   stack["exposure"],
+        "shift_risk": stack["shift_risk"],
+        "pro_required": not is_pro,
+    }
+
+    if is_pro:
+        base_stack.update({
+            "survival":         stack["survival"],
+            "hazard":           stack["hazard"],
+            "macro":            stack["macro"],
+            "trend":            stack["trend"],
+            "execution":        stack["execution"],
+            "macro_coherence":  stack["macro"]["coherence"]     if stack.get("macro")     else None,
+            "trend_coherence":  stack["trend"]["coherence"]     if stack.get("trend")     else None,
+            "exec_coherence":   stack["execution"]["coherence"] if stack.get("execution") else None,
+            "regime_age_hours": round(age_1h, 2),
+            "trend_maturity":   maturity_pct,
+            "percentile":       percentile_rank(db, coin, stack["execution"]["score"], "1h")
+                                if stack.get("execution") else None,
+        })
+
+    return {
+        "stack":           base_stack,
+        "confidence":      confidence,
+        "volatility_env":  vol_env,
+        "transitions":     transitions,
+        "breadth":         breadth,
+        "overview":        overview,
+        "correlation":     corr,
+        "history":         history,
+        "survival_curve":  curve,
+        "risk_events":     RISK_EVENTS,
+        "maturity_label":  maturity_label,
+        "avg_regime_duration_hours": round(avg_dur, 1),
+    }
 
 def volume_momentum(volumes: list, period: int = 10) -> float:
     if len(volumes) < period * 2:
