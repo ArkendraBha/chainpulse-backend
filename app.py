@@ -140,21 +140,29 @@ def get_klines(symbol: str, interval: str, limit: int = 120):
     Single function that returns (prices, volumes).
     Replaces the old get_prices + get_volumes pair.
     """
-    url    = "https://api.binance.com/api/v3/klines"
+    urls = [
+        "https://api.binance.com/api/v3/klines",
+        "https://api.binance.us/api/v3/klines",
+    ]
     params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if not isinstance(data, list):
-            logger.warning(f"Unexpected Binance response for {symbol}/{interval}")
-            return [], []
-        prices  = [float(c[4]) for c in data]
-        volumes = [float(c[5]) for c in data]
-        return prices, volumes
-    except Exception as e:
-        logger.error(f"Kline fetch failed {symbol}/{interval}: {e}")
-        return [], []
+
+    for url in urls:
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, list) or len(data) == 0:
+                logger.warning(f"Empty response from {url} for {symbol}/{interval}")
+                continue
+            prices  = [float(c[4]) for c in data]
+            volumes = [float(c[5]) for c in data]
+            logger.info(f"Got {len(prices)} candles for {symbol}/{interval} from {url}")
+            return prices, volumes
+        except Exception as e:
+            logger.error(f"Kline fetch failed {url} {symbol}/{interval}: {e}")
+            continue
+
+    return [], []
 
 
 def volatility(prices: list, period: int = 20) -> float:
