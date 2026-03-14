@@ -330,18 +330,83 @@ def create_checkout_session():
     )
     return {"url": session.url}
 
+# -------------------------
+# EMAIL SENDING (RESEND)
+# -------------------------
+
+def send_email(to_email, subject, html_content):
+    if not RESEND_API_KEY:
+        return
+
+    requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": "ChainPulse <alerts@chainpulse.pro>",
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content,
+        },
+    )
+
+
+# -------------------------
+# SUBSCRIBE (DOUBLE OPT-IN)
+# -------------------------
+
 @app.post("/subscribe")
 def subscribe(email: str):
     db = SessionLocal()
+
     user = db.query(User).filter(User.email == email).first()
 
     if not user:
-        user = User(email=email, subscription_status="inactive")
+        user = User(
+            email=email,
+            subscription_status="inactive",
+            alerts_enabled=False
+        )
         db.add(user)
         db.commit()
 
+    # Send confirmation email
+    send_email(
+        email,
+        "Confirm your ChainPulse subscription",
+        f"""
+        <h2>Confirm Your Subscription</h2>
+        <p>Click below to activate weekly regime updates:</p>
+        <a href="https://chainpulse-backend-2xok.onrender.com/confirm?email={email}">
+        Confirm Subscription
+        </a>
+        """
+    )
+
     db.close()
-    return {"status": "subscribed"}
+
+    return {"status": "confirmation_sent"}
+
+@app.get("/confirm")
+def confirm(email: str):
+    db = SessionLocal()
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        user.alerts_enabled = True
+        db.commit()
+
+    db.close()
+
+    return {"status": "subscription_confirmed"}
+
+from fastapi.responses import FileResponse
+
+@app.get("/sample-report")
+def sample_report():
+    return FileResponse("sample_report.pdf", media_type="application/pdf")
 
 @app.get("/update-now")
 def update_now(coin: str="BTC"):
