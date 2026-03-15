@@ -35,7 +35,7 @@ RESEND_API_KEY         = os.getenv("RESEND_API_KEY")
 UPDATE_SECRET          = os.getenv("UPDATE_SECRET", "changeme")
 FRONTEND_URL           = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
 BACKEND_URL            = os.getenv("BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com")
-
+RESEND_FROM_EMAIL = (os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev").strip()
 
 
 if STRIPE_SECRET_KEY:
@@ -1388,7 +1388,7 @@ def send_email(to_email: str, subject: str, html_content: str):
                 "Content-Type":  "application/json",
             },
             json={
-                "from":    "ChainPulse <notifications@alerts.chainpulse.pro>",
+                "from": f"ChainPulse <{RESEND_FROM_EMAIL}>",
                 "to":      [to_email],
                 "subject": subject,
                 "html":    html_content,
