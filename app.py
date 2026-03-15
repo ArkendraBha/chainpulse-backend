@@ -309,7 +309,7 @@ def get_auth_header(request: Request) -> Optional[str]:
 # ─────────────────────────────────────────
 def is_user_pro(user):
     if os.getenv("ENV") != "production" and DEV_BYPASS_PRO:
-        if DEV_BYPASS_EMAIL is None or user.email == DEV_BYPASS_EMAIL:
+        if DEV_BYPASS_EMAIL is None or user.email == arkendra6@gmail.com:
             return True
     return user.is_pro
 
