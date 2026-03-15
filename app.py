@@ -3261,3 +3261,24 @@ def sample_report():
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Report not found")
     return FileResponse(path, media_type="application/pdf")
+
+class RestoreRequest(BaseModel):
+    email: str
+
+# ── Restore Access ────────────────────────────
+@app.post("/restore-access")
+def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
+    email = body.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user or user.subscription_status != "active":
+        raise HTTPException(status_code=404, detail="No active Pro subscription found")
+
+    user.access_token = str(uuid.uuid4())  # rotate token
+    db.commit()
+
+    send_email(
+        email,
+        "ChainPulse Pro — Your Login Link",
+        welcome_email_html(email, user.access_token),
+    )
+    return {"status": "sent"}
