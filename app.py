@@ -16,6 +16,7 @@ import requests
 import math
 import stripe
 import logging
+import json
 
 # ─────────────────────────────────────────
 # SETUP
@@ -25,15 +26,15 @@ logger = logging.getLogger("chainpulse")
 
 load_dotenv()
 
-DATABASE_URL          = os.getenv("DATABASE_URL", "sqlite:///./chainpulse.db")
-STRIPE_SECRET_KEY     = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID       = os.getenv("STRIPE_PRICE_ID")
+DATABASE_URL           = os.getenv("DATABASE_URL", "sqlite:///./chainpulse.db")
+STRIPE_SECRET_KEY      = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID        = os.getenv("STRIPE_PRICE_ID")
 STRIPE_PRICE_ID_ANNUAL = os.getenv("STRIPE_PRICE_ID_ANNUAL")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-RESEND_API_KEY        = os.getenv("RESEND_API_KEY")
-UPDATE_SECRET         = os.getenv("UPDATE_SECRET", "changeme")
-FRONTEND_URL          = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
-BACKEND_URL           = os.getenv(
+STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET")
+RESEND_API_KEY         = os.getenv("RESEND_API_KEY")
+UPDATE_SECRET          = os.getenv("UPDATE_SECRET", "changeme")
+FRONTEND_URL           = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
+BACKEND_URL            = os.getenv(
     "BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com"
 )
 
@@ -48,76 +49,76 @@ Base         = declarative_base()
 # DATABASE MODELS
 # ─────────────────────────────────────────
 class MarketSummary(Base):
-    __tablename__ = "market_summary"
-    id            = Column(Integer, primary_key=True)
-    coin          = Column(String, index=True)
-    timeframe     = Column(String, index=True, default="1h")
-    score         = Column(Float)
-    label         = Column(String)
-    coherence     = Column(Float)
-    momentum_4h   = Column(Float, default=0)
-    momentum_24h  = Column(Float, default=0)
+    __tablename__  = "market_summary"
+    id             = Column(Integer, primary_key=True)
+    coin           = Column(String, index=True)
+    timeframe      = Column(String, index=True, default="1h")
+    score          = Column(Float)
+    label          = Column(String)
+    coherence      = Column(Float)
+    momentum_4h    = Column(Float, default=0)
+    momentum_24h   = Column(Float, default=0)
     volatility_val = Column(Float, default=0)
-    created_at    = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at     = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class User(Base):
-    __tablename__            = "users"
-    id                       = Column(Integer, primary_key=True)
-    email                    = Column(String, unique=True, index=True)
-    subscription_status      = Column(String, default="inactive")
-    stripe_customer_id       = Column(String, nullable=True)
-    stripe_subscription_id   = Column(String, nullable=True)
-    alerts_enabled           = Column(Boolean, default=False)
-    last_alert_sent          = Column(DateTime, nullable=True)
-    access_token             = Column(String, nullable=True, index=True)
-    created_at               = Column(DateTime, default=datetime.datetime.utcnow)
+    __tablename__          = "users"
+    id                     = Column(Integer, primary_key=True)
+    email                  = Column(String, unique=True, index=True)
+    subscription_status    = Column(String, default="inactive")
+    stripe_customer_id     = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    alerts_enabled         = Column(Boolean, default=False)
+    last_alert_sent        = Column(DateTime, nullable=True)
+    access_token           = Column(String, nullable=True, index=True)
+    created_at             = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class UserProfile(Base):
-    __tablename__         = "user_profiles"
-    id                    = Column(Integer, primary_key=True)
-    user_id               = Column(Integer, index=True)
-    email                 = Column(String, unique=True, index=True)
-    max_drawdown_pct      = Column(Float, default=20.0)
-    typical_leverage      = Column(Float, default=1.0)
-    holding_period_days   = Column(Integer, default=10)
-    risk_identity         = Column(String, default="balanced")
-    risk_multiplier       = Column(Float, default=1.0)
-    created_at            = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at            = Column(DateTime, default=datetime.datetime.utcnow)
+    __tablename__       = "user_profiles"
+    id                  = Column(Integer, primary_key=True)
+    user_id             = Column(Integer, index=True)
+    email               = Column(String, unique=True, index=True)
+    max_drawdown_pct    = Column(Float, default=20.0)
+    typical_leverage    = Column(Float, default=1.0)
+    holding_period_days = Column(Integer, default=10)
+    risk_identity       = Column(String, default="balanced")
+    risk_multiplier     = Column(Float, default=1.0)
+    created_at          = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at          = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class ExposureLog(Base):
-    __tablename__       = "exposure_logs"
-    id                  = Column(Integer, primary_key=True)
-    email               = Column(String, index=True)
-    coin                = Column(String, default="BTC")
-    user_exposure_pct   = Column(Float)
-    model_exposure_pct  = Column(Float)
-    regime_label        = Column(String)
-    hazard_at_log       = Column(Float, default=0)
-    shift_risk_at_log   = Column(Float, default=0)
-    alignment_at_log    = Column(Float, default=0)
-    followed_model      = Column(Boolean, default=False)
-    price_at_log        = Column(Float, default=0)
-    created_at          = Column(DateTime, default=datetime.datetime.utcnow)
+    __tablename__      = "exposure_logs"
+    id                 = Column(Integer, primary_key=True)
+    email              = Column(String, index=True)
+    coin               = Column(String, default="BTC")
+    user_exposure_pct  = Column(Float)
+    model_exposure_pct = Column(Float)
+    regime_label       = Column(String)
+    hazard_at_log      = Column(Float, default=0)
+    shift_risk_at_log  = Column(Float, default=0)
+    alignment_at_log   = Column(Float, default=0)
+    followed_model     = Column(Boolean, default=False)
+    price_at_log       = Column(Float, default=0)
+    created_at         = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class PerformanceEntry(Base):
-    __tablename__        = "performance_entries"
-    id                   = Column(Integer, primary_key=True)
-    email                = Column(String, index=True)
-    coin                 = Column(String, default="BTC")
-    date                 = Column(DateTime, default=datetime.datetime.utcnow)
-    user_exposure_pct    = Column(Float, default=0)
-    model_exposure_pct   = Column(Float, default=0)
-    price_open           = Column(Float, default=0)
-    price_close          = Column(Float, default=0)
-    user_return_pct      = Column(Float, default=0)
-    model_return_pct     = Column(Float, default=0)
-    regime_label         = Column(String, default="Neutral")
-    discipline_flags     = Column(String, default="")
+    __tablename__      = "performance_entries"
+    id                 = Column(Integer, primary_key=True)
+    email              = Column(String, index=True)
+    coin               = Column(String, default="BTC")
+    date               = Column(DateTime, default=datetime.datetime.utcnow)
+    user_exposure_pct  = Column(Float, default=0)
+    model_exposure_pct = Column(Float, default=0)
+    price_open         = Column(Float, default=0)
+    price_close        = Column(Float, default=0)
+    user_return_pct    = Column(Float, default=0)
+    model_return_pct   = Column(Float, default=0)
+    regime_label       = Column(String, default="Neutral")
+    discipline_flags   = Column(String, default="")
 
 
 Base.metadata.create_all(bind=engine)
@@ -144,29 +145,29 @@ class SubscribeRequest(BaseModel):
 
 
 class UserProfileRequest(BaseModel):
-    email: str
-    max_drawdown_pct: float = 20.0
-    typical_leverage: float = 1.0
-    holding_period_days: int = 10
-    risk_identity: str = "balanced"
+    email:               str
+    max_drawdown_pct:    float = 20.0
+    typical_leverage:    float = 1.0
+    holding_period_days: int   = 10
+    risk_identity:       str   = "balanced"
 
 
 class ExposureLogRequest(BaseModel):
-    email: str
-    coin: str = "BTC"
+    email:             str
+    coin:              str   = "BTC"
     user_exposure_pct: float
 
 
 class PerformanceEntryRequest(BaseModel):
-    email: str
-    coin: str = "BTC"
+    email:             str
+    coin:              str   = "BTC"
     user_exposure_pct: float
-    price_open: float
-    price_close: float
+    price_open:        float
+    price_close:       float
 
 
 class CheckoutRequest(BaseModel):
-    email: Optional[str] = ""
+    email:  Optional[str]  = ""
     annual: Optional[bool] = False
 
 
@@ -201,26 +202,25 @@ REGIME_NUMERIC = {
     "Strong Risk-Off": -2,
 }
 
-# Monthly / annual prices (display only — Stripe holds the truth)
 PRICE_MONTHLY = 39
 PRICE_ANNUAL  = 348
 
 RISK_EVENTS = [
-    {"name": "FOMC Meeting",      "type": "macro",  "impact": "High"},
-    {"name": "CPI Release",       "type": "macro",  "impact": "High"},
-    {"name": "Options Expiry",    "type": "market", "impact": "Medium"},
-    {"name": "ETF Flow Report",   "type": "market", "impact": "Medium"},
-    {"name": "BTC Halving",       "type": "crypto", "impact": "High"},
-    {"name": "Fed Minutes",       "type": "macro",  "impact": "Medium"},
-    {"name": "PCE Inflation",     "type": "macro",  "impact": "High"},
+    {"name": "FOMC Meeting",    "type": "macro",  "impact": "High"},
+    {"name": "CPI Release",     "type": "macro",  "impact": "High"},
+    {"name": "Options Expiry",  "type": "market", "impact": "Medium"},
+    {"name": "ETF Flow Report", "type": "market", "impact": "Medium"},
+    {"name": "BTC Halving",     "type": "crypto", "impact": "High"},
+    {"name": "Fed Minutes",     "type": "macro",  "impact": "Medium"},
+    {"name": "PCE Inflation",   "type": "macro",  "impact": "High"},
 ]
 
 PLAYBOOK_DATA = {
     "Strong Risk-On": {
-        "exposure_band":     "65–80%",
-        "strategy_mode":     "Aggressive",
-        "trend_follow_wr":   72,
-        "mean_revert_wr":    38,
+        "exposure_band":      "65–80%",
+        "strategy_mode":      "Aggressive",
+        "trend_follow_wr":    72,
+        "mean_revert_wr":     38,
         "avg_remaining_days": 14,
         "actions": [
             "Favour trend continuation entries",
@@ -231,10 +231,10 @@ PLAYBOOK_DATA = {
         "avoid": ["Shorting into strength", "Waiting for deep pullbacks"],
     },
     "Risk-On": {
-        "exposure_band":     "50–65%",
-        "strategy_mode":     "Balanced",
-        "trend_follow_wr":   63,
-        "mean_revert_wr":    44,
+        "exposure_band":      "50–65%",
+        "strategy_mode":      "Balanced",
+        "trend_follow_wr":    63,
+        "mean_revert_wr":     44,
         "avg_remaining_days": 9,
         "actions": [
             "Favour pullback entries in trend direction",
@@ -244,10 +244,10 @@ PLAYBOOK_DATA = {
         "avoid": ["Over-leveraging at breakouts", "Chasing extended moves"],
     },
     "Neutral": {
-        "exposure_band":     "25–45%",
-        "strategy_mode":     "Neutral",
-        "trend_follow_wr":   49,
-        "mean_revert_wr":    51,
+        "exposure_band":      "25–45%",
+        "strategy_mode":      "Neutral",
+        "trend_follow_wr":    49,
+        "mean_revert_wr":     51,
         "avg_remaining_days": 6,
         "actions": [
             "Reduce overall exposure",
@@ -256,10 +256,10 @@ PLAYBOOK_DATA = {
         "avoid": ["Strong directional bias", "Large position sizes"],
     },
     "Risk-Off": {
-        "exposure_band":     "10–25%",
-        "strategy_mode":     "Defensive",
-        "trend_follow_wr":   31,
-        "mean_revert_wr":    57,
+        "exposure_band":      "10–25%",
+        "strategy_mode":      "Defensive",
+        "trend_follow_wr":    31,
+        "mean_revert_wr":     57,
         "avg_remaining_days": 7,
         "actions": [
             "Reduce long exposure significantly",
@@ -268,10 +268,10 @@ PLAYBOOK_DATA = {
         "avoid": ["Buying dips aggressively", "Adding to losing longs"],
     },
     "Strong Risk-Off": {
-        "exposure_band":     "0–10%",
-        "strategy_mode":     "Fully Defensive",
-        "trend_follow_wr":   22,
-        "mean_revert_wr":    48,
+        "exposure_band":      "0–10%",
+        "strategy_mode":      "Fully Defensive",
+        "trend_follow_wr":    22,
+        "mean_revert_wr":     48,
         "avg_remaining_days": 11,
         "actions": [
             "Move to maximum cash allocation",
@@ -282,7 +282,7 @@ PLAYBOOK_DATA = {
 }
 
 # ─────────────────────────────────────────
-# AUTH HELPER
+# AUTH HELPERS
 # ─────────────────────────────────────────
 def resolve_pro_status(authorization: Optional[str], db: Session) -> bool:
     if not authorization or not authorization.startswith("Bearer "):
@@ -296,17 +296,11 @@ def resolve_pro_status(authorization: Optional[str], db: Session) -> bool:
     return user.subscription_status == "active"
 
 
-def require_pro(request: Request, db: Session = Depends(get_db)) -> bool:
-    auth = (
+def get_auth_header(request: Request) -> Optional[str]:
+    return (
         request.headers.get("authorization")
         or request.headers.get("Authorization")
     )
-    if not resolve_pro_status(auth, db):
-        raise HTTPException(
-            status_code=403,
-            detail="Pro subscription required. Visit chainpulse.pro/pricing.",
-        )
-    return True
 
 
 # ─────────────────────────────────────────
@@ -388,19 +382,19 @@ def calculate_score_for_timeframe(coin: str, interval: str) -> Optional[dict]:
     score     = max(-100, min(100, score))
     coherence = calculate_coherence(mom_short, mom_long, vol)
     return {
-        "score":     round(score, 4),
-        "mom_short": round(mom_short, 4),
-        "mom_long":  round(mom_long, 4),
+        "score":      round(score, 4),
+        "mom_short":  round(mom_short, 4),
+        "mom_long":   round(mom_long, 4),
         "volatility": round(vol, 4),
-        "coherence": coherence,
+        "coherence":  coherence,
     }
 
 
 def classify(score: float) -> str:
-    if score > 35:  return "Strong Risk-On"
-    if score > 15:  return "Risk-On"
-    if score < -35: return "Strong Risk-Off"
-    if score < -15: return "Risk-Off"
+    if score > 35:   return "Strong Risk-On"
+    if score > 15:   return "Risk-On"
+    if score < -35:  return "Strong Risk-Off"
+    if score < -15:  return "Risk-Off"
     return "Neutral"
 
 
@@ -430,7 +424,7 @@ def get_history(db: Session, coin: str, timeframe: str = "1h"):
     return (
         db.query(MarketSummary)
         .filter(
-            MarketSummary.coin == coin,
+            MarketSummary.coin      == coin,
             MarketSummary.timeframe == timeframe,
         )
         .order_by(MarketSummary.created_at.asc())
@@ -459,7 +453,7 @@ def current_age(db: Session, coin: str, timeframe: str = "1h") -> float:
     records = (
         db.query(MarketSummary)
         .filter(
-            MarketSummary.coin == coin,
+            MarketSummary.coin      == coin,
             MarketSummary.timeframe == timeframe,
         )
         .order_by(MarketSummary.created_at.desc())
@@ -524,9 +518,9 @@ def trend_maturity_score(age: float, avg_duration: float, hazard: float) -> floa
 def regime_shift_risk(hazard: float, survival: float, coherence: float) -> float:
     return round(
         min(100.0,
-            hazard      * 0.50 +
-            (100 - survival)  * 0.35 +
-            (100 - coherence) * 0.15),
+            hazard           * 0.50 +
+            (100 - survival) * 0.35 +
+            (100 - coherence)* 0.15),
         2,
     )
 
@@ -534,11 +528,11 @@ def regime_shift_risk(hazard: float, survival: float, coherence: float) -> float
 def exposure_recommendation(
     score: float, survival: float, hazard: float, coherence: float
 ) -> float:
-    if score > 35:   base = 0.85
-    elif score > 15: base = 0.65
+    if score > 35:    base = 0.85
+    elif score > 15:  base = 0.65
     elif score < -35: base = 0.08
     elif score < -15: base = 0.22
-    else:            base = 0.42
+    else:             base = 0.42
     persistence_factor = survival / 100
     hazard_penalty     = 1 - (hazard / 100) * 0.65
     coherence_factor   = 0.7 + (coherence / 100) * 0.3
@@ -547,12 +541,12 @@ def exposure_recommendation(
 
 
 def exposure_recommendation_stacked(
-    macro_label: str,
-    trend_label: str,
-    exec_label: str,
-    alignment: float,
-    survival_1h: float,
-    hazard_1h: float,
+    macro_label:  str,
+    trend_label:  str,
+    exec_label:   str,
+    alignment:    float,
+    survival_1h:  float,
+    hazard_1h:    float,
     coherence_1h: float,
 ) -> float:
     macro_num = REGIME_NUMERIC.get(macro_label, 0)
@@ -565,11 +559,11 @@ def exposure_recommendation_stacked(
 
     trend_num = REGIME_NUMERIC.get(trend_label, 0)
     rang      = macro_ceiling - macro_floor
-    if trend_num == 2:   base = macro_ceiling
-    elif trend_num == 1: base = macro_floor + rang * 0.75
-    elif trend_num == 0: base = macro_floor + rang * 0.50
+    if trend_num == 2:    base = macro_ceiling
+    elif trend_num == 1:  base = macro_floor + rang * 0.75
+    elif trend_num == 0:  base = macro_floor + rang * 0.50
     elif trend_num == -1: base = macro_floor + rang * 0.25
-    else:                base = macro_floor
+    else:                 base = macro_floor
 
     exec_num = REGIME_NUMERIC.get(exec_label, 0)
     base     = base + (exec_num / 2) * 0.10
@@ -601,7 +595,7 @@ def build_regime_stack(coin: str, db: Session) -> dict:
         record = (
             db.query(MarketSummary)
             .filter(
-                MarketSummary.coin == coin,
+                MarketSummary.coin      == coin,
                 MarketSummary.timeframe == tf,
             )
             .order_by(MarketSummary.created_at.desc())
@@ -677,7 +671,7 @@ def compute_market_breadth(db: Session) -> dict:
         record = (
             db.query(MarketSummary)
             .filter(
-                MarketSummary.coin == coin,
+                MarketSummary.coin      == coin,
                 MarketSummary.timeframe == "1d",
             )
             .order_by(MarketSummary.created_at.desc())
@@ -692,7 +686,10 @@ def compute_market_breadth(db: Session) -> dict:
 
     total = bullish + neutral + bearish
     if total == 0:
-        return {"bullish": 0, "neutral": 0, "bearish": 0, "total": 0, "breadth_score": 0}
+        return {
+            "bullish": 0, "neutral": 0, "bearish": 0,
+            "total": 0, "breadth_score": 0,
+        }
     return {
         "bullish":       bullish,
         "neutral":       neutral,
@@ -725,13 +722,16 @@ def volatility_environment(coin: str, db: Session) -> Optional[dict]:
         vol_label, vol_score = "Low", 15
 
     if len(prices_1h) >= 24:
-        rets      = [(prices_1h[i] - prices_1h[i-1]) / prices_1h[i-1] for i in range(1, 24)]
-        positive  = sum(1 for r in rets if r > 0)
-        stab_pct  = round((positive / len(rets)) * 100, 1)
-        stab_lbl  = (
-            "Strong"       if stab_pct > 65 else
-            "Moderate"     if stab_pct > 50 else
-            "Weak"         if stab_pct > 35 else
+        rets     = [
+            (prices_1h[i] - prices_1h[i - 1]) / prices_1h[i - 1]
+            for i in range(1, 24)
+        ]
+        positive = sum(1 for r in rets if r > 0)
+        stab_pct = round((positive / len(rets)) * 100, 1)
+        stab_lbl = (
+            "Strong"        if stab_pct > 65 else
+            "Moderate"      if stab_pct > 50 else
+            "Weak"          if stab_pct > 35 else
             "Deteriorating"
         )
     else:
@@ -758,13 +758,13 @@ def volatility_environment(coin: str, db: Session) -> Optional[dict]:
         liq_label = "Unknown"
 
     return {
-        "volatility_label":  vol_label,
-        "volatility_score":  vol_score,
-        "stability_label":   stab_lbl,
-        "stability_score":   round(stab_pct, 1),
-        "stress_label":      stress_label,
-        "stress_score":      round(stress_score, 1),
-        "liquidity_label":   liq_label,
+        "volatility_label": vol_label,
+        "volatility_score": vol_score,
+        "stability_label":  stab_lbl,
+        "stability_score":  round(stab_pct, 1),
+        "stress_label":     stress_label,
+        "stress_score":     round(stress_score, 1),
+        "liquidity_label":  liq_label,
     }
 
 
@@ -779,7 +779,7 @@ def compute_correlation(
 
     def returns(prices):
         return [
-            (prices[i] - prices[i-1]) / prices[i-1]
+            (prices[i] - prices[i - 1]) / prices[i - 1]
             for i in range(len(prices) - period, len(prices))
         ]
 
@@ -842,17 +842,17 @@ def build_correlation_matrix(coins: Optional[list] = None) -> dict:
 # REGIME CONFIDENCE SCORE
 # ─────────────────────────────────────────
 def regime_confidence_score(
-    alignment: float,
-    survival: float,
-    coherence: float,
+    alignment:     float,
+    survival:      float,
+    coherence:     float,
     breadth_score: float,
 ) -> dict:
     breadth_norm = (breadth_score + 100) / 2
     confidence   = round(
-        alignment       * 0.30 +
-        survival        * 0.25 +
-        abs(coherence)  * 0.25 +
-        breadth_norm    * 0.20,
+        alignment      * 0.30 +
+        survival       * 0.25 +
+        abs(coherence) * 0.25 +
+        breadth_norm   * 0.20,
         1,
     )
     confidence = min(100, max(0, confidence))
@@ -905,9 +905,14 @@ def regime_transition_matrix(
     if total == 0:
         probs = {s: round(100 / len(STATES), 1) for s in STATES}
     else:
-        probs = {s: round((row.get(s, 0) / total) * 100, 1) for s in STATES}
+        probs = {
+            s: round((row.get(s, 0) / total) * 100, 1)
+            for s in STATES
+        }
 
-    sorted_probs = dict(sorted(probs.items(), key=lambda x: x[1], reverse=True))
+    sorted_probs = dict(
+        sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    )
     return {
         "current_state":   current_state,
         "transitions":     sorted_probs,
@@ -920,28 +925,28 @@ def regime_transition_matrix(
 # PORTFOLIO ALLOCATOR
 # ─────────────────────────────────────────
 def portfolio_allocation(
-    account_size: float,
-    exposure_pct: float,
+    account_size:     float,
+    exposure_pct:     float,
     confidence_score: float,
-    strategy_mode: str = "balanced",
+    strategy_mode:    str = "balanced",
 ) -> dict:
-    mode_mult = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
-    mult        = mode_mult.get(strategy_mode, 1.0)
+    mode_mult    = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
+    mult         = mode_mult.get(strategy_mode, 1.0)
     adj_exposure = min(95, exposure_pct * mult)
-    deployed    = round(account_size * adj_exposure / 100, 2)
-    cash        = round(account_size - deployed, 2)
-    swing_pct   = 0.35 + (confidence_score / 100) * 0.25
-    spot_pct    = 1 - swing_pct
+    deployed     = round(account_size * adj_exposure / 100, 2)
+    cash         = round(account_size - deployed, 2)
+    swing_pct    = 0.35 + (confidence_score / 100) * 0.25
+    spot_pct     = 1 - swing_pct
 
     return {
-        "account_size":       account_size,
-        "strategy_mode":      strategy_mode,
-        "adjusted_exposure":  round(adj_exposure, 1),
-        "deployed_capital":   deployed,
-        "cash_reserve":       cash,
-        "spot_allocation":    round(deployed * spot_pct, 2),
-        "swing_allocation":   round(deployed * swing_pct, 2),
-        "cash_pct":           round((cash / account_size) * 100, 1),
+        "account_size":      account_size,
+        "strategy_mode":     strategy_mode,
+        "adjusted_exposure": round(adj_exposure, 1),
+        "deployed_capital":  deployed,
+        "cash_reserve":      cash,
+        "spot_allocation":   round(deployed * spot_pct, 2),
+        "swing_allocation":  round(deployed * swing_pct, 2),
+        "cash_pct":          round((cash / account_size) * 100, 1),
     }
 
 
@@ -966,31 +971,36 @@ def compute_regime_quality(stack: dict) -> dict:
         1,
     )
 
-    if score >= 80:   grade, structural, breakdown = "A",  "Excellent",  "Low"
-    elif score >= 65: grade, structural, breakdown = "B+", "Strong",     "Low-Moderate"
-    elif score >= 50: grade, structural, breakdown = "B",  "Healthy",    "Moderate"
-    elif score >= 35: grade, structural, breakdown = "C",  "Weakening",  "Elevated"
-    else:             grade, structural, breakdown = "D",  "Fragile",    "High"
+    if score >= 80:   grade, structural, breakdown = "A",  "Excellent", "Low"
+    elif score >= 65: grade, structural, breakdown = "B+", "Strong",    "Low-Moderate"
+    elif score >= 50: grade, structural, breakdown = "B",  "Healthy",   "Moderate"
+    elif score >= 35: grade, structural, breakdown = "C",  "Weakening", "Elevated"
+    else:             grade, structural, breakdown = "D",  "Fragile",   "High"
 
-    return {"grade": grade, "score": score, "structural": structural, "breakdown": breakdown}
+    return {
+        "grade":      grade,
+        "score":      score,
+        "structural": structural,
+        "breakdown":  breakdown,
+    }
 
 
 # ─────────────────────────────────────────
 # DECISION ENGINE
 # ─────────────────────────────────────────
 def compute_decision_score(
-    hazard: float,
-    shift_risk: float,
-    alignment: float,
-    survival: float,
+    hazard:        float,
+    shift_risk:    float,
+    alignment:     float,
+    survival:      float,
     breadth_score: float,
-    maturity_pct: float,
+    maturity_pct:  float,
 ) -> dict:
-    breadth_norm   = (breadth_score + 100) / 2
-    survival_score = survival
-    safety_score   = 100 - hazard
-    shift_score    = 100 - shift_risk
-    maturity_score = 100 - maturity_pct
+    breadth_norm    = (breadth_score + 100) / 2
+    survival_score  = survival
+    safety_score    = 100 - hazard
+    shift_score     = 100 - shift_risk
+    maturity_score  = 100 - maturity_pct
     breadth_bullish = breadth_norm
 
     decision_score = round(
@@ -1078,24 +1088,27 @@ def compute_decision_score(
     }
 
 
+# ─────────────────────────────────────────
+# IF NOTHING PANEL
+# ─────────────────────────────────────────
 def compute_if_nothing_panel(
-    user_exposure: float,
+    user_exposure:  float,
     model_exposure: float,
-    hazard: float,
-    shift_risk: float,
-    regime_label: str,
+    hazard:         float,
+    shift_risk:     float,
+    regime_label:   str,
 ) -> dict:
     delta        = user_exposure - model_exposure
     over_exposed = delta > 0
     delta_abs    = abs(round(delta, 1))
 
-    base_dd_prob       = round((hazard * 0.5 + shift_risk * 0.5), 1)
+    base_dd_prob        = round((hazard * 0.5 + shift_risk * 0.5), 1)
     exposure_multiplier = 1 + (delta / 100) * 0.8 if over_exposed else 1.0
-    adj_dd_prob        = round(min(95, base_dd_prob * exposure_multiplier), 1)
-    dd_prob_increase   = round(adj_dd_prob - base_dd_prob, 1)
-    dd_magnitude       = round((hazard / 100) * 0.25 * 100, 1)
-    expected_loss_pct  = round((user_exposure / 100) * (dd_magnitude / 100) * 100, 1)
-    model_loss_pct     = round((model_exposure / 100) * (dd_magnitude / 100) * 100, 1)
+    adj_dd_prob         = round(min(95, base_dd_prob * exposure_multiplier), 1)
+    dd_prob_increase    = round(adj_dd_prob - base_dd_prob, 1)
+    dd_magnitude        = round((hazard / 100) * 0.25 * 100, 1)
+    expected_loss_pct   = round((user_exposure / 100) * (dd_magnitude / 100) * 100, 1)
+    model_loss_pct      = round((model_exposure / 100) * (dd_magnitude / 100) * 100, 1)
 
     if over_exposed and delta_abs > 15:
         severity = "high"
@@ -1144,19 +1157,19 @@ def compute_discipline_score(logs: list) -> dict:
             "summary": "Log your exposure to start tracking discipline.",
         }
 
-    total_logs  = len(logs)
-    followed    = sum(1 for l in logs if l.followed_model)
-    base_score  = round((followed / total_logs) * 100, 1) if total_logs > 0 else 50
-    flags       = []
-    penalties   = 0
-    bonuses     = 0
+    total_logs = len(logs)
+    followed   = sum(1 for l in logs if l.followed_model)
+    base_score = round((followed / total_logs) * 100, 1) if total_logs > 0 else 50
+    flags      = []
+    penalties  = 0
+    bonuses    = 0
 
     for log in logs:
-        hazard    = log.hazard_at_log    or 0
+        hazard     = log.hazard_at_log    or 0
         shift_risk = log.shift_risk_at_log or 0
-        user_exp  = log.user_exposure_pct  or 0
-        model_exp = log.model_exposure_pct or 50
-        delta     = user_exp - model_exp
+        user_exp   = log.user_exposure_pct  or 0
+        model_exp  = log.model_exposure_pct or 50
+        delta      = user_exp - model_exp
 
         if hazard > 65 and delta > 10:
             flags.append({
@@ -1321,7 +1334,7 @@ def compute_mistake_replay(logs: list, db: Session, coin: str) -> list:
                 "direction": direction,
                 "severity":  severity,
                 "message": (
-                    f"You were {direction} by {abs(round(delta,1))}% "
+                    f"You were {direction} by {abs(round(delta, 1))}% "
                     f"while hazard was {hazard}% in {regime} regime."
                 ),
                 "signals_at_time": {
@@ -1343,13 +1356,13 @@ def update_market(coin: str, timeframe: str, db: Session):
         logger.warning(f"Insufficient data for {coin}/{timeframe}")
         return None
     entry = MarketSummary(
-        coin          = coin,
-        timeframe     = timeframe,
-        score         = result["score"],
-        label         = classify(result["score"]),
-        coherence     = result["coherence"],
-        momentum_4h   = result["mom_short"],
-        momentum_24h  = result["mom_long"],
+        coin           = coin,
+        timeframe      = timeframe,
+        score          = result["score"],
+        label          = classify(result["score"]),
+        coherence      = result["coherence"],
+        momentum_4h    = result["mom_short"],
+        momentum_24h   = result["mom_long"],
         volatility_val = result["volatility"],
     )
     db.add(entry)
@@ -1405,7 +1418,9 @@ def welcome_email_html(email: str, access_token: str) -> str:
     Open Pro Dashboard
   </a>
   <div style="margin-top:40px;border-top:1px solid #222;padding-top:24px;">
-    <p style="color:#555;font-size:12px;margin-bottom:12px;">What you now have access to:</p>
+    <p style="color:#555;font-size:12px;margin-bottom:12px;">
+      What you now have access to:
+    </p>
     <ul style="color:#666;font-size:12px;line-height:2.2;padding-left:16px;">
       <li>Multi-timeframe regime stack — Macro / Trend / Execution</li>
       <li>Exposure recommendation %</li>
@@ -1454,17 +1469,17 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
             "#f87171"
         )
         quality_row = f"""
-        <tr>
-          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
-                     color:#555;font-size:12px;">Regime Grade</td>
-          <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
-                     color:{grade_color};text-align:right;font-weight:bold;">
-            {quality['grade']} — {quality['structural']}
-          </td>
-        </tr>"""
+    <tr>
+      <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                 color:#555;font-size:12px;">Regime Grade</td>
+      <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
+                 color:{grade_color};text-align:right;font-weight:bold;">
+        {quality['grade']} — {quality['structural']}
+      </td>
+    </tr>"""
 
     actions_html = "".join(
-                f'<li style="color:#999;font-size:12px;line-height:1.8;">{a}</li>'
+        f'<li style="color:#999;font-size:12px;line-height:1.8;">{a}</li>'
         for a in pb["actions"][:3]
     )
 
@@ -1625,19 +1640,23 @@ def morning_email_html(stacks: list, access_token: str) -> str:
 
 
 def weekly_discipline_email_html(
-    email: str,
-    discipline: dict,
+    email:        str,
+    discipline:   dict,
     access_token: str,
 ) -> str:
-    url         = f"{FRONTEND_URL}/app?token={access_token}" if access_token else f"{FRONTEND_URL}/app"
-    score       = discipline.get("score")
-    label       = discipline.get("label", "—")
-    summary     = discipline.get("summary", "")
-    followed    = discipline.get("followed", 0)
-    total       = discipline.get("total", 0)
-    bonuses     = discipline.get("bonuses", 0)
-    penalties   = discipline.get("penalties", 0)
-    flags       = discipline.get("flags", [])
+    url         = (
+        f"{FRONTEND_URL}/app?token={access_token}"
+        if access_token
+        else f"{FRONTEND_URL}/app"
+    )
+    score     = discipline.get("score")
+    label     = discipline.get("label",   "—")
+    summary   = discipline.get("summary", "")
+    followed  = discipline.get("followed", 0)
+    total     = discipline.get("total",    0)
+    bonuses   = discipline.get("bonuses",  0)
+    penalties = discipline.get("penalties", 0)
+    flags     = discipline.get("flags",    [])
 
     score_color = (
         "#34d399" if score and score >= 85 else
@@ -1645,7 +1664,6 @@ def weekly_discipline_email_html(
         "#facc15" if score and score >= 50 else
         "#f87171"
     )
-
     score_display = f"{score}" if score is not None else "N/A"
 
     flags_html = ""
@@ -1664,7 +1682,8 @@ def weekly_discipline_email_html(
     if not flags_html:
         flags_html = """
         <tr>
-          <td colspan="2" style="padding:8px 0;color:#444;font-size:12px;">
+          <td colspan="2"
+              style="padding:8px 0;color:#444;font-size:12px;">
             No discipline events recorded this week.
           </td>
         </tr>"""
@@ -1680,7 +1699,6 @@ def weekly_discipline_email_html(
   <p style="color:#666;font-size:13px;margin-bottom:32px;">
     Here is how you tracked against the model this week.
   </p>
-
   <div style="text-align:center;padding:32px;border:1px solid #1f1f1f;
               margin-bottom:32px;">
     <div style="font-size:48px;font-weight:700;color:{score_color};">
@@ -1691,7 +1709,6 @@ def weekly_discipline_email_html(
     </div>
     <div style="font-size:12px;color:#555;margin-top:8px;">{summary}</div>
   </div>
-
   <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
     <tr>
       <td style="padding:10px 0;border-bottom:1px solid #1f1f1f;
@@ -1712,7 +1729,6 @@ def weekly_discipline_email_html(
                  color:#f87171;text-align:right;">-{penalties}</td>
     </tr>
   </table>
-
   <div style="border:1px solid #1f1f1f;padding:16px;margin-bottom:24px;">
     <div style="font-size:11px;color:#555;text-transform:uppercase;
                 letter-spacing:1px;margin-bottom:12px;">
@@ -1722,7 +1738,6 @@ def weekly_discipline_email_html(
       {flags_html}
     </table>
   </div>
-
   <a href="{url}"
      style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
             text-decoration:none;font-weight:bold;border-radius:4px;">
@@ -1749,7 +1764,6 @@ def health():
 # ── Pricing Info ─────────────────────────────
 @app.get("/pricing-info")
 def pricing_info():
-    """Returns current pricing for display on frontend."""
     return {
         "monthly": {
             "price":    PRICE_MONTHLY,
@@ -1758,12 +1772,12 @@ def pricing_info():
             "period":   "month",
         },
         "annual": {
-            "price":       PRICE_ANNUAL,
-            "currency":    "USD",
-            "label":       "\$348 / year",
-            "period":      "year",
-            "saving":      (PRICE_MONTHLY * 12) - PRICE_ANNUAL,
-            "saving_pct":  round(
+            "price":      PRICE_ANNUAL,
+            "currency":   "USD",
+            "label":      "\$348 / year",
+            "period":     "year",
+            "saving":     (PRICE_MONTHLY * 12) - PRICE_ANNUAL,
+            "saving_pct": round(
                 ((PRICE_MONTHLY * 12 - PRICE_ANNUAL) / (PRICE_MONTHLY * 12)) * 100, 1
             ),
         },
@@ -1875,17 +1889,12 @@ def regime_stack_endpoint(
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
 
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    is_pro = resolve_pro_status(auth_header, db)
+    is_pro = resolve_pro_status(get_auth_header(request), db)
     stack  = build_regime_stack(coin, db)
 
     if stack["incomplete"]:
         return {**stack, "pro_required": False}
 
-    # Fields available to ALL users (free + pro)
     base = {
         "coin":      stack["coin"],
         "macro":     {"label": stack["macro"]["label"]}     if stack["macro"]     else None,
@@ -1893,14 +1902,12 @@ def regime_stack_endpoint(
         "execution": {"label": stack["execution"]["label"]} if stack["execution"] else None,
         "alignment": stack["alignment"],
         "direction": stack["direction"],
-        # breadth is free
     }
 
     if not is_pro:
         return {
             **base,
             "pro_required":              True,
-            # All pro fields returned as None so frontend can gate cleanly
             "exposure":                  None,
             "shift_risk":                None,
             "survival":                  None,
@@ -1915,7 +1922,6 @@ def regime_stack_endpoint(
             "regime_quality":            None,
         }
 
-    # PRO — full data
     age_1h   = current_age(db, coin, "1h")
     avg_dur  = average_regime_duration(db, coin, "1h")
     maturity = trend_maturity_score(age_1h, avg_dur, stack["hazard"])
@@ -1947,22 +1953,25 @@ def regime_stack_endpoint(
 @app.get("/market-overview")
 def market_overview(
     request: Request,
+    coin:    str = "ALL",
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    is_pro  = resolve_pro_status(auth_header, db)
+    is_pro  = resolve_pro_status(get_auth_header(request), db)
     result  = []
     breadth = compute_market_breadth(db)
 
-    for coin in SUPPORTED_COINS:
-        stack = build_regime_stack(coin, db)
+    coins_to_scan = (
+        SUPPORTED_COINS
+        if coin == "ALL"
+        else [coin] if coin in SUPPORTED_COINS
+        else SUPPORTED_COINS
+    )
+
+    for c in coins_to_scan:
+        stack = build_regime_stack(c, db)
         if stack["incomplete"]:
             continue
 
-        # Free fields always included
         row = {
             "coin":      stack["coin"],
             "macro":     stack["macro"]["label"]     if stack["macro"]     else None,
@@ -1972,13 +1981,12 @@ def market_overview(
             "direction": stack["direction"],
         }
 
-        # Pro-only fields
         if is_pro:
             row["exposure"]   = stack["exposure"]
             row["shift_risk"] = stack["shift_risk"]
         else:
-            row["exposure"]   = None
-            row["shift_risk"] = None
+            row["exposure"]     = None
+            row["shift_risk"]   = None
             row["pro_required"] = True
 
         result.append(row)
@@ -1994,7 +2002,7 @@ def latest(coin: str = "BTC", db: Session = Depends(get_db)):
     r = (
         db.query(MarketSummary)
         .filter(
-            MarketSummary.coin == coin,
+            MarketSummary.coin      == coin,
             MarketSummary.timeframe == "1h",
         )
         .order_by(MarketSummary.created_at.desc())
@@ -2003,35 +2011,31 @@ def latest(coin: str = "BTC", db: Session = Depends(get_db)):
     if not r:
         return {"message": "No data yet."}
     return {
-        "coin":        r.coin,
-        "score":       r.score,
-        "label":       r.label,
-        "coherence":   r.coherence,
-        "momentum_4h": r.momentum_4h,
+        "coin":         r.coin,
+        "score":        r.score,
+        "label":        r.label,
+        "coherence":    r.coherence,
+        "momentum_4h":  r.momentum_4h,
         "momentum_24h": r.momentum_24h,
-        "volatility":  r.volatility_val,
-        "timeframe":   r.timeframe,
-        "timestamp":   r.created_at,
+        "volatility":   r.volatility_val,
+        "timeframe":    r.timeframe,
+        "timestamp":    r.created_at,
     }
 
 
-# ── Statistics (landing page) ─────────────────
+# ── Statistics (landing page — free) ─────────
 @app.get("/statistics")
 def statistics(
     coin: str = "BTC",
     db:   Session = Depends(get_db),
 ):
-    """
-    Lightweight endpoint for the landing page live snapshot.
-    Free fields only — no exposure/hazard/shift_risk.
-    """
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
 
     record = (
         db.query(MarketSummary)
         .filter(
-            MarketSummary.coin == coin,
+            MarketSummary.coin      == coin,
             MarketSummary.timeframe == "1h",
         )
         .order_by(MarketSummary.created_at.desc())
@@ -2040,7 +2044,6 @@ def statistics(
     if not record:
         return {"message": "No data yet"}
 
-    # Only surface free-tier fields on the public landing page
     return {
         "coin":      coin,
         "label":     record.label,
@@ -2060,10 +2063,14 @@ def regime_history(
 ):
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise HTTPException(status_code=400, detail="Unsupported timeframe")
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    limit   = min(max(1, limit), 500)
     records = (
         db.query(MarketSummary)
         .filter(
-            MarketSummary.coin == coin,
+            MarketSummary.coin      == coin,
             MarketSummary.timeframe == timeframe,
         )
         .order_by(MarketSummary.created_at.desc())
@@ -2093,15 +2100,8 @@ def survival_curve(
     timeframe: str = "1h",
     db:        Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
-        raise HTTPException(
-            status_code=403,
-            detail="Pro subscription required.",
-        )
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     durations = regime_durations(db, coin, timeframe)
     if len(durations) < 5:
@@ -2143,12 +2143,7 @@ def regime_transitions(
 ):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     result = regime_transition_matrix(db, coin, timeframe)
@@ -2170,12 +2165,7 @@ def volatility_env(
 ):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     result = volatility_environment(coin, db)
@@ -2192,11 +2182,7 @@ def correlation_endpoint(
     coins:   str = "BTC,ETH,SOL",
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     coin_list = [c.strip().upper() for c in coins.split(",") if c.strip()]
@@ -2212,12 +2198,7 @@ def regime_confidence_endpoint(
 ):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     stack   = build_regime_stack(coin, db)
@@ -2225,18 +2206,87 @@ def regime_confidence_endpoint(
     if stack["incomplete"]:
         return {"error": "Insufficient regime data"}
 
-    survival_val = stack.get("survival") or 50.0
+    survival_val  = stack.get("survival") or 50.0
     coherence_val = 0.0
     if stack.get("execution") and stack["execution"].get("coherence"):
         coherence_val = stack["execution"]["coherence"]
 
     confidence = regime_confidence_score(
-        alignment    = stack["alignment"] or 0,
-        survival     = survival_val,
-        coherence    = coherence_val,
+        alignment     = stack["alignment"] or 0,
+        survival      = survival_val,
+        coherence     = coherence_val,
         breadth_score = breadth.get("breadth_score", 0),
     )
     return {**confidence, "coin": coin}
+
+
+# ── Regime Quality (PRO) ─────────────────────
+@app.get("/regime-quality")
+def regime_quality_endpoint(
+    request: Request,
+    coin:    str = "BTC",
+    db:      Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"error": "Insufficient data"}
+
+    quality = compute_regime_quality(stack)
+    return {
+        **quality,
+        "coin":       coin,
+        "regime":     stack["execution"]["label"] if stack.get("execution") else "Neutral",
+        "exposure":   stack.get("exposure"),
+        "shift_risk": stack.get("shift_risk"),
+        "hazard":     stack.get("hazard"),
+        "survival":   stack.get("survival"),
+    }
+
+
+# ── Playbook (free preview / PRO full) ───────
+@app.get("/playbook")
+def playbook(
+    request: Request,
+    coin:    str = "BTC",
+    db:      Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    is_pro = resolve_pro_status(get_auth_header(request), db)
+    stack  = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"error": "Insufficient data"}
+
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    pb         = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
+
+    if not is_pro:
+        return {
+            "coin":          coin,
+            "regime":        exec_label,
+            "strategy_mode": pb["strategy_mode"],
+            "exposure_band": pb["exposure_band"],
+            "pro_required":  True,
+        }
+
+    return {
+        "coin":               coin,
+        "regime":             exec_label,
+        "strategy_mode":      pb["strategy_mode"],
+        "exposure_band":      pb["exposure_band"],
+        "trend_follow_wr":    pb["trend_follow_wr"],
+        "mean_revert_wr":     pb["mean_revert_wr"],
+        "avg_remaining_days": pb["avg_remaining_days"],
+        "actions":            pb["actions"],
+        "avoid":              pb["avoid"],
+        "pro_required":       False,
+    }
 
 
 # ── Portfolio Allocator (PRO) ────────────────
@@ -2254,41 +2304,36 @@ def portfolio_allocator_endpoint(
         raise HTTPException(status_code=400, detail="Invalid strategy mode")
     if account_size <= 0:
         raise HTTPException(status_code=400, detail="Invalid account size")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
 
-    breadth   = compute_market_breadth(db)
-    survival_v = stack.get("survival") or 50.0
+    breadth     = compute_market_breadth(db)
+    survival_v  = stack.get("survival") or 50.0
     coherence_v = 0.0
     if stack.get("execution") and stack["execution"].get("coherence"):
         coherence_v = stack["execution"]["coherence"]
 
     confidence = regime_confidence_score(
-        alignment    = stack["alignment"] or 0,
-        survival     = survival_v,
-        coherence    = coherence_v,
+        alignment     = stack["alignment"] or 0,
+        survival      = survival_v,
+        coherence     = coherence_v,
         breadth_score = breadth.get("breadth_score", 0),
     )
     allocation = portfolio_allocation(
-        account_size  = account_size,
-        exposure_pct  = stack["exposure"] or 5,
+        account_size     = account_size,
+        exposure_pct     = stack["exposure"] or 5,
         confidence_score = confidence["score"],
-        strategy_mode = strategy_mode,
+        strategy_mode    = strategy_mode,
     )
     return {
         **allocation,
-        "regime":    stack["execution"]["label"] if stack.get("execution") else "—",
+        "regime":     stack["execution"]["label"] if stack.get("execution") else "—",
         "confidence": confidence["score"],
-        "alignment": stack["alignment"],
+        "alignment":  stack["alignment"],
     }
 
 
@@ -2307,12 +2352,7 @@ def decision_engine_endpoint(
 ):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     stack   = build_regime_stack(coin, db)
@@ -2336,11 +2376,10 @@ def decision_engine_endpoint(
         breadth_score = breadth.get("breadth_score", 0),
         maturity_pct  = maturity,
     )
-
-    exec_label         = stack["execution"]["label"] if stack.get("execution") else "Neutral"
-    decision["regime"] = exec_label
+    exec_label           = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    decision["regime"]   = exec_label
     decision["exposure"] = stack.get("exposure", 50)
-    decision["coin"]   = coin
+    decision["coin"]     = coin
     return decision
 
 
@@ -2354,19 +2393,14 @@ def if_nothing_panel_endpoint(
 ):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
 
-    exec_label    = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    exec_label     = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     model_exposure = stack.get("exposure") or 50
 
     return compute_if_nothing_panel(
@@ -2385,22 +2419,22 @@ def save_user_profile(
     body:    UserProfileRequest,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
-    email    = body.email.strip().lower()
-    mult_map = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
+    email     = body.email.strip().lower()
+    mult_map  = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
     risk_mult = mult_map.get(body.risk_identity, 1.0)
+
+    user    = db.query(User).filter(User.email == email).first()
+    user_id = user.id if user else None
 
     profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
-        profile = UserProfile(email=email)
+        profile = UserProfile(email=email, user_id=user_id)
         db.add(profile)
 
+    profile.user_id             = user_id
     profile.max_drawdown_pct    = body.max_drawdown_pct
     profile.typical_leverage    = body.typical_leverage
     profile.holding_period_days = body.holding_period_days
@@ -2410,8 +2444,8 @@ def save_user_profile(
     db.commit()
 
     return {
-        "status":         "saved",
-        "email":          email,
+        "status":          "saved",
+        "email":           email,
         "risk_multiplier": risk_mult,
         "profile": {
             "max_drawdown_pct":    profile.max_drawdown_pct,
@@ -2429,11 +2463,7 @@ def get_user_profile(
     coin:    str = "BTC",
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email   = email.strip().lower()
@@ -2445,7 +2475,7 @@ def get_user_profile(
             "message": "No profile found. Complete onboarding to personalise.",
         }
 
-    stack                = build_regime_stack(coin, db)
+    stack                 = build_regime_stack(coin, db)
     personalised_exposure = None
     if not stack["incomplete"] and stack.get("exposure"):
         personalised_exposure = round(
@@ -2473,11 +2503,7 @@ def log_exposure(
     body:    ExposureLogRequest,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email = body.email.strip().lower()
@@ -2488,13 +2514,21 @@ def log_exposure(
     if stack["incomplete"]:
         raise HTTPException(status_code=400, detail="No regime data yet")
 
-    model_exp  = stack.get("exposure") or 50
+    model_exp  = stack.get("exposure")   or 50
     hazard     = stack.get("hazard")     or 0
     shift_risk = stack.get("shift_risk") or 0
     alignment  = stack.get("alignment")  or 0
     exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     delta      = body.user_exposure_pct - model_exp
     followed   = abs(delta) <= 10
+
+    current_price = 0.0
+    try:
+        prices, _ = get_klines(body.coin, "1h", limit=2)
+        if prices:
+            current_price = prices[-1]
+    except Exception:
+        pass
 
     log = ExposureLog(
         email              = email,
@@ -2506,6 +2540,7 @@ def log_exposure(
         shift_risk_at_log  = shift_risk,
         alignment_at_log   = alignment,
         followed_model     = followed,
+        price_at_log       = current_price,
     )
     db.add(log)
     db.commit()
@@ -2521,14 +2556,15 @@ def log_exposure(
         severity = "ok"
 
     return {
-        "status":        "logged",
-        "user_exposure": body.user_exposure_pct,
-        "model_exposure": model_exp,
-        "delta":         round(delta, 1),
-        "followed_model": followed,
-        "feedback":      feedback,
-        "severity":      severity,
-        "regime":        exec_label,
+        "status":          "logged",
+        "user_exposure":   body.user_exposure_pct,
+        "model_exposure":  model_exp,
+        "delta":           round(delta, 1),
+        "followed_model":  followed,
+        "feedback":        feedback,
+        "severity":        severity,
+        "regime":          exec_label,
+        "price_at_log":    current_price,
     }
 
 
@@ -2539,11 +2575,7 @@ def discipline_score_endpoint(
     email:   str,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email = email.strip().lower()
@@ -2568,11 +2600,7 @@ def performance_comparison_endpoint(
     limit:   int = 30,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email   = email.strip().lower()
@@ -2599,11 +2627,7 @@ def log_performance(
     body:    PerformanceEntryRequest,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email = body.email.strip().lower()
@@ -2622,6 +2646,20 @@ def log_performance(
     user_return  = round(price_return * (body.user_exposure_pct / 100), 2)
     model_return = round(price_return * (model_exp / 100), 2)
 
+    flags   = []
+    delta   = body.user_exposure_pct - model_exp
+    hazard  = stack.get("hazard")     or 0
+    shift_r = stack.get("shift_risk") or 0
+
+    if hazard > 65 and delta > 10:
+        flags.append("over_exposed_high_hazard")
+    if "Risk-Off" in exec_label and delta > 15:
+        flags.append("over_exposed_risk_off")
+    if shift_r > 70 and delta < -5:
+        flags.append("reduced_on_hazard_spike")
+    if abs(delta) <= 10:
+        flags.append("followed_model")
+
     entry = PerformanceEntry(
         email              = email,
         coin               = body.coin,
@@ -2633,17 +2671,19 @@ def log_performance(
         user_return_pct    = user_return,
         model_return_pct   = model_return,
         regime_label       = exec_label,
+        discipline_flags   = json.dumps(flags),
     )
     db.add(entry)
     db.commit()
 
     return {
-        "status":       "logged",
-        "price_return": round(price_return, 2),
-        "user_return":  user_return,
-        "model_return": model_return,
-        "alpha":        round(user_return - model_return, 2),
-        "regime":       exec_label,
+        "status":           "logged",
+        "price_return":     round(price_return, 2),
+        "user_return":      user_return,
+        "model_return":     model_return,
+        "alpha":            round(user_return - model_return, 2),
+        "regime":           exec_label,
+        "discipline_flags": flags,
     }
 
 
@@ -2655,11 +2695,7 @@ def mistake_replay_endpoint(
     coin:    str = "BTC",
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email = email.strip().lower()
@@ -2689,11 +2725,7 @@ def edge_profile_endpoint(
     email:   str,
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email   = email.strip().lower()
@@ -2721,14 +2753,14 @@ def edge_profile_endpoint(
             regime_data[label].append(e.user_return_pct)
 
     profile = {}
-    for regime, returns in regime_data.items():
-        if returns:
-            avg  = round(sum(returns) / len(returns), 2)
-            wins = sum(1 for r in returns if r > 0)
+    for regime, rets in regime_data.items():
+        if rets:
+            avg  = round(sum(rets) / len(rets), 2)
+            wins = sum(1 for r in rets if r > 0)
             profile[regime] = {
                 "avg_return":  avg,
-                "win_rate":    round((wins / len(returns)) * 100, 1),
-                "count":       len(returns),
+                "win_rate":    round((wins / len(rets)) * 100, 1),
+                "count":       len(rets),
                 "performance": (
                     "Strong" if avg > 2   else
                     "Good"   if avg > 0.5 else
@@ -2775,11 +2807,7 @@ def full_accountability(
     coin:    str = "BTC",
     db:      Session = Depends(get_db),
 ):
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    if not resolve_pro_status(auth_header, db):
+    if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     email = email.strip().lower()
@@ -2801,7 +2829,7 @@ def full_accountability(
         .limit(30)
         .all()
     )
-    profile = db.query(UserProfile).filter(UserProfile.email == email).first()
+    user_profile = db.query(UserProfile).filter(UserProfile.email == email).first()
 
     discipline  = compute_discipline_score(logs)
     performance = compute_performance_comparison(entries)
@@ -2833,12 +2861,12 @@ def full_accountability(
         "replays":     replays,
         "edge":        edge,
         "profile": {
-            "risk_identity":       profile.risk_identity       if profile else None,
-            "risk_multiplier":     profile.risk_multiplier     if profile else None,
-            "max_drawdown_pct":    profile.max_drawdown_pct    if profile else None,
-            "holding_period_days": profile.holding_period_days if profile else None,
-        } if profile else None,
-        "has_profile": profile is not None,
+            "risk_identity":       user_profile.risk_identity       if user_profile else None,
+            "risk_multiplier":     user_profile.risk_multiplier     if user_profile else None,
+            "max_drawdown_pct":    user_profile.max_drawdown_pct    if user_profile else None,
+            "holding_period_days": user_profile.holding_period_days if user_profile else None,
+        } if user_profile else None,
+        "has_profile": user_profile is not None,
     }
 
 
@@ -2862,9 +2890,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     data       = event["data"]["object"]
 
     if event_type == "checkout.session.completed":
-        customer_email   = data.get("customer_details", {}).get("email")
-        customer_id      = data.get("customer")
-        subscription_id  = data.get("subscription")
+        customer_email  = data.get("customer_details", {}).get("email")
+        customer_id     = data.get("customer")
+        subscription_id = data.get("subscription")
 
         if customer_email:
             user = db.query(User).filter(User.email == customer_email).first()
@@ -2892,7 +2920,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         "customer.subscription.paused",
     ):
         sub_id = data.get("id")
-        user   = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
+        user   = db.query(User).filter(
+            User.stripe_subscription_id == sub_id
+        ).first()
         if user:
             user.subscription_status = "inactive"
             user.access_token        = None
@@ -2901,7 +2931,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
-        user        = db.query(User).filter(User.stripe_customer_id == customer_id).first()
+        user        = db.query(User).filter(
+            User.stripe_customer_id == customer_id
+        ).first()
         if user:
             send_email(
                 user.email,
@@ -2927,7 +2959,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     elif event_type == "customer.subscription.updated":
         sub_id = data.get("id")
         status = data.get("status")
-        user   = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
+        user   = db.query(User).filter(
+            User.stripe_subscription_id == sub_id
+        ).first()
         if user:
             if status == "active":
                 user.subscription_status = "active"
@@ -2961,7 +2995,6 @@ def create_checkout_session(
             if user and user.stripe_customer_id:
                 existing_customer_id = user.stripe_customer_id
 
-        # Select price ID: annual or monthly
         price_id = (
             STRIPE_PRICE_ID_ANNUAL
             if body.annual and STRIPE_PRICE_ID_ANNUAL
@@ -2970,12 +3003,12 @@ def create_checkout_session(
 
         session_params = {
             "payment_method_types": ["card"],
-            "line_items": [{"price": price_id, "quantity": 1}],
-            "mode":        "subscription",
-            "success_url": f"{FRONTEND_URL}/app?success=true",
-            "cancel_url":  f"{FRONTEND_URL}/pricing?cancelled=true",
+            "line_items":           [{"price": price_id, "quantity": 1}],
+            "mode":                 "subscription",
+            "success_url":          f"{FRONTEND_URL}/app?success=true",
+            "cancel_url":           f"{FRONTEND_URL}/pricing?cancelled=true",
             "allow_promotion_codes": True,
-            "subscription_data": {"trial_period_days": 7},
+            "subscription_data":    {"trial_period_days": 7},
         }
 
         if existing_customer_id:
@@ -2983,7 +3016,7 @@ def create_checkout_session(
         elif customer_email:
             session_params["customer_email"] = customer_email
 
-        session = stripe.checkout.Session.create(**session_params)
+        session =        session = stripe.checkout.Session.create(**session_params)
         return {"url": session.url, "session_id": session.id}
 
     except stripe.error.StripeError as e:
@@ -3137,7 +3170,6 @@ def send_weekly_discipline(secret: str = "", db: Session = Depends(get_db)):
 
     for user in pro_users:
         try:
-            # Fetch last 7 days of logs for this user
             cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=7)
             logs   = (
                 db.query(ExposureLog)
@@ -3151,7 +3183,6 @@ def send_weekly_discipline(secret: str = "", db: Session = Depends(get_db)):
 
             discipline = compute_discipline_score(logs)
 
-            # Only send if user has logged at least once
             if discipline.get("total", 0) == 0:
                 continue
 
@@ -3167,7 +3198,9 @@ def send_weekly_discipline(secret: str = "", db: Session = Depends(get_db)):
             sent += 1
 
         except Exception as e:
-            logger.error(f"Weekly discipline email failed for {user.email}: {e}")
+            logger.error(
+                f"Weekly discipline email failed for {user.email}: {e}"
+            )
             errors += 1
 
     return {"status": "complete", "sent": sent, "errors": errors}
@@ -3179,22 +3212,14 @@ def user_status(
     request: Request,
     db:      Session = Depends(get_db),
 ):
-    """
-    Lets the frontend check subscription status without
-    making a full data fetch.
-    """
-    auth_header = (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
-    is_pro = resolve_pro_status(auth_header, db)
+    is_pro = resolve_pro_status(get_auth_header(request), db)
     return {
         "is_pro":    is_pro,
         "timestamp": datetime.datetime.utcnow(),
     }
 
 
-# ── Debug / Utility (remove or restrict in production) ──
+# ── Debug Prices ─────────────────────────────
 @app.get("/debug-prices")
 def debug_prices(coin: str = "BTC", interval: str = "1h"):
     prices, volumes = get_klines(coin, interval, limit=120)
@@ -3209,6 +3234,7 @@ def debug_prices(coin: str = "BTC", interval: str = "1h"):
     }
 
 
+# ── Debug Stack ──────────────────────────────
 @app.get("/debug-stack")
 def debug_stack(coin: str = "BTC", db: Session = Depends(get_db)):
     """Shows full raw stack — for internal debugging only."""
