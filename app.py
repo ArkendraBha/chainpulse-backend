@@ -1388,7 +1388,7 @@ def send_email(to_email: str, subject: str, html_content: str):
                 "Content-Type":  "application/json",
             },
             json={
-                "from": "ChainPulse <onboarding@resend.dev>",
+                "from":    "ChainPulse <alerts@chainpulse.pro>",
                 "to":      [to_email],
                 "subject": subject,
                 "html":    html_content,
