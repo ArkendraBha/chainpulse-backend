@@ -167,8 +167,9 @@ class PerformanceEntryRequest(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    email:  Optional[str]  = ""
-    annual: Optional[bool] = False
+    email:         str = ""
+    billing_cycle: str = "monthly"  
+    annual:        bool = False 
 
 
 # ─────────────────────────────────────────
@@ -2995,20 +2996,23 @@ def create_checkout_session(
             if user and user.stripe_customer_id:
                 existing_customer_id = user.stripe_customer_id
 
+        # support both billing_cycle string and legacy annual boolean
+        is_annual = body.billing_cycle == "annual" or body.annual
+
         price_id = (
             STRIPE_PRICE_ID_ANNUAL
-            if body.annual and STRIPE_PRICE_ID_ANNUAL
+            if is_annual and STRIPE_PRICE_ID_ANNUAL
             else STRIPE_PRICE_ID
         )
 
         session_params = {
-            "payment_method_types": ["card"],
-            "line_items":           [{"price": price_id, "quantity": 1}],
-            "mode":                 "subscription",
-            "success_url":          f"{FRONTEND_URL}/app?success=true",
-            "cancel_url":           f"{FRONTEND_URL}/pricing?cancelled=true",
+            "payment_method_types":  ["card"],
+            "line_items":            [{"price": price_id, "quantity": 1}],
+            "mode":                  "subscription",
+            "success_url":           f"{FRONTEND_URL}/app?success=true",
+            "cancel_url":            f"{FRONTEND_URL}/pricing?cancelled=true",
             "allow_promotion_codes": True,
-            "subscription_data":    {"trial_period_days": 7},
+            "subscription_data":     {"trial_period_days": 7},
         }
 
         if existing_customer_id:
@@ -3016,7 +3020,7 @@ def create_checkout_session(
         elif customer_email:
             session_params["customer_email"] = customer_email
 
-        session =        session = stripe.checkout.Session.create(**session_params)
+        session = stripe.checkout.Session.create(**session_params)
         return {"url": session.url, "session_id": session.id}
 
     except stripe.error.StripeError as e:
