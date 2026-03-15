@@ -34,9 +34,10 @@ STRIPE_WEBHOOK_SECRET  = os.getenv("STRIPE_WEBHOOK_SECRET")
 RESEND_API_KEY         = os.getenv("RESEND_API_KEY")
 UPDATE_SECRET          = os.getenv("UPDATE_SECRET", "changeme")
 FRONTEND_URL           = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
-BACKEND_URL            = os.getenv(
-    "BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com"
-)
+BACKEND_URL            = os.getenv("BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com")
+DEV_BYPASS_PRO         = os.getenv("DEV_BYPASS_PRO") == "true"
+DEV_BYPASS_EMAIL       = os.getenv("DEV_BYPASS_EMAIL")
+
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
@@ -303,6 +304,14 @@ def get_auth_header(request: Request) -> Optional[str]:
         or request.headers.get("Authorization")
     )
 
+# ─────────────────────────────────────────
+# Admin bypass for development
+# ─────────────────────────────────────────
+def is_user_pro(user):
+    if os.getenv("ENV") != "production" and DEV_BYPASS_PRO:
+        if DEV_BYPASS_EMAIL is None or user.email == DEV_BYPASS_EMAIL:
+            return True
+    return user.is_pro
 
 # ─────────────────────────────────────────
 # MARKET DATA
