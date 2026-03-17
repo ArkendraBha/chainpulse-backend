@@ -3,7 +3,7 @@
 # ─────────────────────────────────────────
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel
@@ -949,7 +949,59 @@ def portfolio_allocation(
         "swing_allocation":  round(deployed * swing_pct, 2),
         "cash_pct":          round((cash / account_size) * 100, 1),
     }
+# ─────────────────────────────────────────
+# Daily Email Template
+# ─────────────────────────────────────────
+def generate_daily_brief_html(regime, exposure, shift_risk, directive):
+    return f"""
+    <div style="background:#000;padding:40px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+      <div style="max-width:600px;margin:0 auto;background:#0b0b0f;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:40px;color:#fff;">
 
+        <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">
+          ChainPulse Daily Brief
+        </div>
+
+        <h2 style="margin-top:16px;font-size:22px;">
+          BTC Regime: <span style="color:#ef4444;">{regime}</span>
+        </h2>
+
+        <div style="margin-top:24px;">
+          <div style="font-size:14px;color:#9ca3af;">Recommended Exposure</div>
+          <div style="font-size:28px;font-weight:600;margin-top:4px;">
+            {exposure}%
+          </div>
+        </div>
+
+        <div style="margin-top:24px;">
+          <div style="font-size:14px;color:#9ca3af;">Shift Risk</div>
+          <div style="font-size:22px;font-weight:600;margin-top:4px;">
+            {shift_risk}%
+          </div>
+        </div>
+
+        <div style="margin-top:24px;">
+          <div style="font-size:14px;color:#9ca3af;">Directive</div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;">
+            {directive}
+          </div>
+        </div>
+
+        <div style="margin:30px 0;">
+          <a href="https://chainpulse.pro/app"
+             style="background:#fff;color:#000;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600;display:inline-block;">
+             View Full Dashboard
+          </a>
+        </div>
+
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:30px 0;">
+
+        <p style="font-size:12px;color:#6b7280;">
+          You are receiving this because you subscribed to ChainPulse Daily Brief.
+        </p>
+
+      </div>
+    </div>
+    """
 
 # ─────────────────────────────────────────
 # REGIME QUALITY SCORE
@@ -3051,23 +3103,36 @@ def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
         email,
         "Confirm your ChainPulse subscription",
         f"""
-<div style="font-family:sans-serif;max-width:560px;margin:0 auto;
-            background:#000;color:#fff;padding:40px;">
-  <div style="font-size:11px;color:#555;text-transform:uppercase;
-              letter-spacing:2px;margin-bottom:16px;">ChainPulse</div>
-  <h2 style="margin-bottom:16px;">Confirm Your Subscription</h2>
-  <p style="color:#999;margin-bottom:32px;">
-    Click below to activate regime alerts and daily briefs:
-  </p>
-  <a href="{confirm_url}"
-     style="display:inline-block;background:#fff;color:#000;
-            padding:14px 28px;text-decoration:none;
-            font-weight:bold;border-radius:4px;">
-    Confirm Subscription
-  </a>
-  <p style="color:#333;font-size:11px;margin-top:40px;">
-    ChainPulse. Not financial advice.
-  </p>
+<div style="background:#000;padding:40px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+  <div style="max-width:600px;margin:0 auto;background:#0b0b0f;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:40px;color:#fff;">
+    
+    <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">
+      ChainPulse Quant
+    </div>
+
+    <h1 style="margin:16px 0 8px;font-size:26px;">
+      Confirm Your Subscription
+    </h1>
+
+    <p style="color:#9ca3af;font-size:15px;line-height:1.6;">
+      You're one click away from receiving your Daily Regime Brief.
+    </p>
+
+    <div style="margin:30px 0;">
+      <a href="{confirmation_link}" 
+         style="background:#fff;color:#000;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600;display:inline-block;">
+         Confirm Subscription
+      </a>
+    </div>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:30px 0;">
+
+    <p style="font-size:13px;color:#6b7280;">
+      Daily regime label, shift risk, exposure guidance.<br>
+      Built for disciplined swing traders.
+    </p>
+
+  </div>
 </div>
 """,
     )
@@ -3077,12 +3142,65 @@ def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
 @app.get("/confirm")
 def confirm(email: str, db: Session = Depends(get_db)):
     email = email.strip().lower()
-    user  = db.query(User).filter(User.email == email).first()
-    if user:
-        user.alerts_enabled = True
-        db.commit()
-        return {"status": "confirmed", "email": email}
-    raise HTTPException(status_code=404, detail="Email not found")
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    user.alerts_enabled = True
+    db.commit()
+
+    return HTMLResponse(content=f"""
+    <html>
+    <head>
+        <title>Subscription Confirmed</title>
+        <style>
+            body {{
+                background-color: #000;
+                color: #fff;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+            }}
+            .card {{
+                background: rgba(255,255,255,0.05);
+                border: 1px solid rgba(255,255,255,0.1);
+                padding: 50px;
+                border-radius: 24px;
+                text-align: center;
+                backdrop-filter: blur(12px);
+                box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            }}
+            .btn {{
+                display: inline-block;
+                margin-top: 25px;
+                padding: 14px 28px;
+                background: white;
+                color: black;
+                border-radius: 14px;
+                text-decoration: none;
+                font-weight: 600;
+                transition: 0.2s ease;
+            }}
+            .btn:hover {{
+                transform: translateY(-2px);
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>✅ Subscription Confirmed</h1>
+            <p>Your Daily Regime Brief is now active.</p>
+            <a href="https://chainpulse.pro/app" class="btn">
+                Go to Dashboard
+            </a>
+        </div>
+    </body>
+    </html>
+    """)
 
 
 # ── Alert Dispatch (PRO — internal cron) ─────
