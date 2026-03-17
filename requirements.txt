@@ -6,3 +6,4 @@ openai
 requests
 stripe
 apscheduler
+resend
