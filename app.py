@@ -3250,9 +3250,8 @@ def send_morning_email(secret: str = "", db: Session = Depends(get_db)):
     if secret != UPDATE_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized")
 
-    pro_users = db.query(User).filter(
-        User.subscription_status == "active",
-        User.alerts_enabled      == True,
+    subscribers = db.query(User).filter(
+        User.alerts_enabled == True
     ).all()
 
     stacks = []
@@ -3262,7 +3261,7 @@ def send_morning_email(secret: str = "", db: Session = Depends(get_db)):
             stacks.append(stack)
 
     sent = 0
-    for user in pro_users:
+    for user in subscribers:
         send_email(
             user.email,
             "ChainPulse Morning Regime Brief",
