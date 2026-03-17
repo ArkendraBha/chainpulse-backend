@@ -1821,13 +1821,13 @@ def pricing_info():
         "monthly": {
             "price":    PRICE_MONTHLY,
             "currency": "USD",
-            "label":    "\$39 / month",
+            "label":    "$39 / month",
             "period":   "month",
         },
         "annual": {
             "price":      PRICE_ANNUAL,
             "currency":   "USD",
-            "label":      "\$348 / year",
+            "label":      "$348 / year",
             "period":     "year",
             "saving":     (PRICE_MONTHLY * 12) - PRICE_ANNUAL,
             "saving_pct": round(
