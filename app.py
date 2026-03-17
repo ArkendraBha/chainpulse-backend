@@ -3083,59 +3083,60 @@ def create_checkout_session(
         raise HTTPException(status_code=500, detail="Checkout creation failed")
 
 
-# ── Subscribe / Confirm ──────────────────────
+from fastapi import Depends
+from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
+import resend
+
 @app.post("/subscribe")
 def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
-    user  = db.query(User).filter(User.email == email).first()
+
+    user = db.query(User).filter(User.email == email).first()
     if not user:
         user = User(
-            email               = email,
-            subscription_status = "inactive",
-            alerts_enabled      = False,
+            email=email,
+            subscription_status="inactive",
+            alerts_enabled=False,
         )
         db.add(user)
         db.commit()
 
-    confirm_url = f"{BACKEND_URL}/confirm?email={email}"
+    confirmation_link = f"{BACKEND_URL}/confirm?email={email}"
 
-    send_email(
-        email,
-        "Confirm your ChainPulse subscription",
-        f"""
-<div style="background:#000;padding:40px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
-  <div style="max-width:600px;margin:0 auto;background:#0b0b0f;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:40px;color:#fff;">
-    
-    <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">
-      ChainPulse Quant
+    html = f"""
+    <div style="background:#000;padding:40px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+      <div style="max-width:600px;margin:0 auto;background:#0b0b0f;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:40px;color:#fff;">
+        
+        <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">
+          ChainPulse Quant
+        </div>
+
+        <h1 style="margin:16px 0 8px;font-size:26px;">
+          Confirm Your Subscription
+        </h1>
+
+        <p style="color:#9ca3af;font-size:15px;line-height:1.6;">
+          You're one click away from receiving your Daily Regime Brief.
+        </p>
+
+        <div style="margin:30px 0;">
+          <a href="{confirmation_link}" 
+             style="background:#fff;color:#000;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600;display:inline-block;">
+             Confirm Subscription
+          </a>
+        </div>
+      </div>
     </div>
+    """
 
-    <h1 style="margin:16px 0 8px;font-size:26px;">
-      Confirm Your Subscription
-    </h1>
+    resend.emails.send({
+        "from": "ChainPulse <noreply@yourdomain.com>",
+        "to": email,
+        "subject": "Confirm your Daily Regime Brief",
+        "html": html
+    })
 
-    <p style="color:#9ca3af;font-size:15px;line-height:1.6;">
-      You're one click away from receiving your Daily Regime Brief.
-    </p>
-
-    <div style="margin:30px 0;">
-      <a href="{confirmation_link}" 
-         style="background:#fff;color:#000;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600;display:inline-block;">
-         Confirm Subscription
-      </a>
-    </div>
-
-    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.08);margin:30px 0;">
-
-    <p style="font-size:13px;color:#6b7280;">
-      Daily regime label, shift risk, exposure guidance.<br>
-      Built for disciplined swing traders.
-    </p>
-
-  </div>
-</div>
-""",
-    )
     return {"status": "confirmation_sent"}
 
 
