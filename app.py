@@ -1430,17 +1430,17 @@ def update_market(coin: str, timeframe: str, db: Session):
 # EMAIL HELPERS
 # ─────────────────────────────────────────
 def send_email(to: str, subject: str, html: str) -> bool:
-    """Send email via Resend. Returns True on success."""
     if not RESEND_API_KEY:
         logger.warning("RESEND_API_KEY not set — skipping email")
         return False
+
     try:
         resend.api_key = RESEND_API_KEY
-        resend.Emails.send({                        # note: Emails.send not emails.send
-            "from":    f"ChainPulse <noreply@{YOUR_VERIFIED_DOMAIN}>",  # must match Resend verified domain
-            "to":      to,
+        resend.Emails.send({
+            "from": RESEND_FROM_EMAIL,
+            "to": to,
             "subject": subject,
-            "html":    html,
+            "html": html,
         })
         return True
     except Exception as e:
@@ -3391,27 +3391,3 @@ def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
         welcome_email_html(email, user.access_token),
     )
     return {"status": "sent"}
-# Add this temporary route to your backend for testing only
-@app.get("/dev-activate")
-def dev_activate(email: str, secret: str = "", db: Session = Depends(get_db)):
-    if secret != UPDATE_SECRET:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        user = User(email=email)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    
-    user.subscription_status = "active"
-    user.alerts_enabled      = True
-    if not user.access_token:
-        user.access_token = str(uuid.uuid4())
-    db.commit()
-    
-    return {
-        "status":       "activated",
-        "email":        email,
-        "access_token": user.access_token,
-    }
