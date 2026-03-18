@@ -3099,40 +3099,41 @@ def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
 
     confirmation_link = f"{BACKEND_URL}/confirm?email={email}"
 
+    # FIX: use your actual verified sender domain
     html = f"""
-    <div style="background:#000;padding:40px 0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">
+    <div style="background:#000;padding:40px 0;font-family:-apple-system,sans-serif;">
       <div style="max-width:600px;margin:0 auto;background:#0b0b0f;border:1px solid rgba(255,255,255,0.08);border-radius:24px;padding:40px;color:#fff;">
-        
         <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#6b7280;">
           ChainPulse Quant
         </div>
-
-        <h1 style="margin:16px 0 8px;font-size:26px;">
-          Confirm Your Subscription
-        </h1>
-
+        <h1 style="margin:16px 0 8px;font-size:26px;">Confirm Your Subscription</h1>
         <p style="color:#9ca3af;font-size:15px;line-height:1.6;">
           You're one click away from receiving your Daily Regime Brief.
         </p>
-
         <div style="margin:30px 0;">
-          <a href="{confirmation_link}" 
+          <a href="{confirmation_link}"
              style="background:#fff;color:#000;padding:14px 28px;border-radius:14px;text-decoration:none;font-weight:600;display:inline-block;">
-             Confirm Subscription
+            Confirm Subscription
           </a>
         </div>
       </div>
     </div>
     """
 
-    resend.emails.send({
-        "from": "ChainPulse <noreply@yourdomain.com>",
-        "to": email,
-        "subject": "Confirm your Daily Regime Brief",
-        "html": html
-    })
+    try:
+        # Use your send_email helper which uses resend properly
+        send_email(
+            email,
+            "Confirm your Daily Regime Brief",
+            html,
+        )
+        logger.info(f"Confirmation email sent to {email}")
+    except Exception as e:
+        logger.error(f"Failed to send confirmation email to {email}: {e}")
+        # Still return success so user is registered even if email fails
+        return {"status": "registered", "email_sent": False}
 
-    return {"status": "confirmation_sent"}
+    return {"status": "confirmation_sent", "email_sent": True}
 
 
 @app.get("/confirm")
