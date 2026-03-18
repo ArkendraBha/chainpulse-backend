@@ -3083,11 +3083,6 @@ def create_checkout_session(
         raise HTTPException(status_code=500, detail="Checkout creation failed")
 
 
-from fastapi import Depends
-from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
-import resend
-
 @app.post("/subscribe")
 def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
     email = body.email.strip().lower()
