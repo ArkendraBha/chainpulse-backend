@@ -17,6 +17,7 @@ import math
 import stripe
 import logging
 import json
+import resend
 
 # ─────────────────────────────────────────
 # SETUP
@@ -3390,3 +3391,27 @@ def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
         welcome_email_html(email, user.access_token),
     )
     return {"status": "sent"}
+# Add this temporary route to your backend for testing only
+@app.get("/dev-activate")
+def dev_activate(email: str, secret: str = "", db: Session = Depends(get_db)):
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(email=email)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    user.subscription_status = "active"
+    user.alerts_enabled      = True
+    if not user.access_token:
+        user.access_token = str(uuid.uuid4())
+    db.commit()
+    
+    return {
+        "status":       "activated",
+        "email":        email,
+        "access_token": user.access_token,
+    }
