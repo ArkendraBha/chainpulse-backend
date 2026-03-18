@@ -1428,29 +1428,23 @@ def update_market(coin: str, timeframe: str, db: Session):
 # ─────────────────────────────────────────
 # EMAIL HELPERS
 # ─────────────────────────────────────────
-def send_email(to_email: str, subject: str, html_content: str):
+def send_email(to: str, subject: str, html: str) -> bool:
+    """Send email via Resend. Returns True on success."""
     if not RESEND_API_KEY:
-        logger.warning("RESEND_API_KEY not set — email skipped")
-        return
+        logger.warning("RESEND_API_KEY not set — skipping email")
+        return False
     try:
-        r = requests.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type":  "application/json",
-            },
-            json={
-                "from": f"ChainPulse <{RESEND_FROM_EMAIL}>",
-                "to":      [to_email],
-                "subject": subject,
-                "html":    html_content,
-            },
-            timeout=8,
-        )
-        r.raise_for_status()
-        logger.info(f"Email sent to {to_email}")
+        resend.api_key = RESEND_API_KEY
+        resend.Emails.send({                        # note: Emails.send not emails.send
+            "from":    f"ChainPulse <noreply@{YOUR_VERIFIED_DOMAIN}>",  # must match Resend verified domain
+            "to":      to,
+            "subject": subject,
+            "html":    html,
+        })
+        return True
     except Exception as e:
-        logger.error(f"Email failed to {to_email}: {e}")
+        logger.error(f"send_email failed for {to}: {e}")
+        return False
 
 
 def welcome_email_html(email: str, access_token: str) -> str:
