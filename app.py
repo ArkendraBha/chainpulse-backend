@@ -3391,3 +3391,17 @@ def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
         welcome_email_html(email, user.access_token),
     )
     return {"status": "sent"}
+@app.get("/ticker")
+def ticker():
+    symbols = [f"{c}USDT" for c in SUPPORTED_COINS]
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbols": json.dumps(symbols)},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.error(f"Ticker fetch failed: {e}")
+        return []
