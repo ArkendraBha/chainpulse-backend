@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
 import os
+import time
 import uuid
 import datetime
 import requests
@@ -18,6 +19,11 @@ import stripe
 import logging
 import json
 import resend
+from logging_config import setup_logging
+setup_logging()
+from cache import cache_get, cache_set
+
+MODEL_VERSION = "3.0.0"
 
 # ─────────────────────────────────────────
 # SETUP
@@ -2006,7 +2012,12 @@ def market_overview(
 ):
     is_pro  = resolve_pro_status(get_auth_header(request), db)
     result  = []
-    breadth = compute_market_breadth(db)
+    cache_key = "market_breadth"
+    breadth = cache_get(cache_key)
+
+    if not breadth:
+        breadth = compute_market_breadth(db)
+        cache_set(cache_key, breadth, ttl=60)
 
     coins_to_scan = (
         SUPPORTED_COINS
@@ -2150,6 +2161,14 @@ def survival_curve(
 ):
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
+    start = time.perf_counter()
+
+    cache_key = f"survival:{coin}:{timeframe}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"survival | coin={coin} | tf={timeframe} | source=cache")
+        return cached
 
     durations = regime_durations(db, coin, timeframe)
     if len(durations) < 5:
@@ -2178,7 +2197,17 @@ def survival_curve(
             "survival": round(surv_pct, 2),
             "hazard":   round(hz, 2),
         })
-    return {"data": curve, "source": "historical"}
+    response = {"data": curve, "source": "historical"}
+
+    cache_set(cache_key, response, ttl=300)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+
+    logger.info(
+        f"survival | coin={coin} | tf={timeframe} | source=computed | duration_ms={duration}"
+    )
+
+    return response
 
 
 # ── Regime Transitions (PRO) ─────────────────
@@ -2194,7 +2223,24 @@ def regime_transitions(
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
-    result = regime_transition_matrix(db, coin, timeframe)
+    start = time.perf_counter()
+
+    cache_key = f"transitions:{coin}:{timeframe}"
+    result = cache_get(cache_key)
+
+    if result:
+        source = "cache"
+    else:
+        result = regime_transition_matrix(db, coin, timeframe)
+        if result:
+            cache_set(cache_key, result, ttl=300)  # 5 minutes
+        source = "computed"
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+
+    logger.info(
+    f"transitions | coin={coin} | tf={timeframe} | source={source} | duration_ms={duration}"
+)
     if result is None:
         return {
             "current_state":   "Insufficient data",
@@ -2216,9 +2262,18 @@ def volatility_env(
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
-    result = volatility_environment(coin, db)
+    cache_key = f"volatility:{coin}"
+
+    result = cache_get(cache_key)
+
+    if not result:
+        result = volatility_environment(coin, db)
+    if result:
+        cache_set(cache_key, result, ttl=120)
+
     if result is None:
         return {"error": "Insufficient data"}
+
     return result
 
 
@@ -2234,7 +2289,16 @@ def correlation_endpoint(
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
     coin_list = [c.strip().upper() for c in coins.split(",") if c.strip()]
-    return build_correlation_matrix(coin_list)
+    sorted_key = ",".join(sorted(coin_list))
+    cache_key = f"correlation:{sorted_key}"
+
+    matrix = cache_get(cache_key)
+
+    if not matrix:
+        matrix = build_correlation_matrix(coin_list)
+        cache_set(cache_key, matrix, ttl=300)
+
+    return matrix
 
 
 # ── Regime Confidence (PRO) ──────────────────
@@ -2280,7 +2344,12 @@ def regime_quality_endpoint(
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
-    stack = build_regime_stack(coin, db)
+    cache_key = f"stack:{coin}"
+    stack = cache_get(cache_key)
+
+    if not stack:
+        stack = build_regime_stack(coin, db)
+        cache_set(cache_key, stack, ttl=60)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
 
@@ -2402,7 +2471,15 @@ def decision_engine_endpoint(
         raise HTTPException(status_code=400, detail="Unsupported coin")
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
+    start = time.perf_counter()
 
+    cache_key = f"decision:{coin}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"decision | coin={coin} | source=cache")
+        return cached
+    
     stack   = build_regime_stack(coin, db)
     breadth = compute_market_breadth(db)
     if stack["incomplete"]:
@@ -2425,9 +2502,19 @@ def decision_engine_endpoint(
         maturity_pct  = maturity,
     )
     exec_label           = stack["execution"]["label"] if stack.get("execution") else "Neutral"
-    decision["regime"]   = exec_label
-    decision["exposure"] = stack.get("exposure", 50)
-    decision["coin"]     = coin
+    decision["regime"]        = exec_label
+    decision["exposure"]      = stack.get("exposure", 50)
+    decision["coin"]          = coin
+    decision["model_version"] = MODEL_VERSION
+
+    cache_set(cache_key, decision, ttl=60)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+
+    logger.info(
+        f"decision | coin={coin} | source=computed | duration_ms={duration}"
+    )
+
     return decision
 
 
