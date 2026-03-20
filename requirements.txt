@@ -7,3 +7,4 @@ requests
 stripe
 apscheduler
 resend
+redis
