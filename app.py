@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, Index
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
@@ -127,6 +127,9 @@ class PerformanceEntry(Base):
     regime_label       = Column(String, default="Neutral")
     discipline_flags   = Column(String, default="")
 
+__table_args__ = (
+    Index("idx_market_coin_tf_time", "coin", "timeframe", "created_at"),
+)
 
 Base.metadata.create_all(bind=engine)
 
