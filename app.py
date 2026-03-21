@@ -67,7 +67,7 @@ class MarketSummary(Base):
     momentum_24h   = Column(Float, default=0)
     volatility_val = Column(Float, default=0)
     created_at     = Column(DateTime, default=datetime.datetime.utcnow)
-
+    
 
 class User(Base):
     __tablename__          = "users"
@@ -127,9 +127,6 @@ class PerformanceEntry(Base):
     regime_label       = Column(String, default="Neutral")
     discipline_flags   = Column(String, default="")
 
-__table_args__ = (
-    Index("idx_market_coin_tf_time", "coin", "timeframe", "created_at"),
-)
 
 Base.metadata.create_all(bind=engine)
 
