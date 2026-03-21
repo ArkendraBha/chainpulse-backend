@@ -4,8 +4,8 @@
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean
-from sqlalchemy.orm import sessionmaker, declarative_base, Session, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Index
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
