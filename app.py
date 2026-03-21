@@ -80,6 +80,7 @@ class User(Base):
     last_alert_sent        = Column(DateTime, nullable=True)
     access_token           = Column(String, nullable=True, index=True)
     created_at             = Column(DateTime, default=datetime.datetime.utcnow)
+    last_active_at         = Column(DateTime, nullable=True)
 
 
 class UserProfile(Base):
@@ -177,6 +178,21 @@ class CheckoutRequest(BaseModel):
     email:         str = ""
     billing_cycle: str = "monthly"  
     annual:        bool = False 
+
+# ─────────────────────────────────────────
+# User Activity Tracking
+# ─────────────────────────────────────────
+
+
+def update_last_active(request: Request, db: Session):
+    token = get_auth_header(request)
+    if not token:
+        return
+
+    user = db.query(User).filter(User.access_token == token).first()
+    if user:
+        user.last_active_at = datetime.datetime.utcnow()
+        db.commit()
 
 
 # ─────────────────────────────────────────
@@ -1975,7 +1991,8 @@ def regime_stack_endpoint(
             "avg_regime_duration_hours": None,
             "regime_quality":            None,
         }
-
+    # Update activity for Pro users
+    update_last_active(request, db)
     age_1h   = current_age(db, coin, "1h")
     avg_dur  = average_regime_duration(db, coin, "1h")
     maturity = trend_maturity_score(age_1h, avg_dur, stack["hazard"])
@@ -2343,6 +2360,7 @@ def regime_quality_endpoint(
         raise HTTPException(status_code=400, detail="Unsupported coin")
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
 
     cache_key = f"stack:{coin}"
     stack = cache_get(cache_key)
@@ -2424,6 +2442,8 @@ def portfolio_allocator_endpoint(
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
 
+    update_last_active(request, db)
+
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
@@ -2471,6 +2491,7 @@ def decision_engine_endpoint(
         raise HTTPException(status_code=400, detail="Unsupported coin")
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
     start = time.perf_counter()
 
     cache_key = f"decision:{coin}"
@@ -2712,6 +2733,7 @@ def discipline_score_endpoint(
 ):
     if not resolve_pro_status(get_auth_header(request), db):
         raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
 
     email = email.strip().lower()
     logs  = (
