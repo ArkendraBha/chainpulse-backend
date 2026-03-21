@@ -3514,3 +3514,74 @@ def ticker():
     except Exception as e:
         logger.error(f"Ticker fetch failed: {e}")
         return []
+
+# ─────────────────────────────────────────
+# DASHBOARD (BATCHED ENDPOINT)
+# ─────────────────────────────────────────
+@app.get("/dashboard")
+def dashboard(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    authorization = get_auth_header(request)
+    is_pro = resolve_pro_status(authorization, db)
+
+    # ── Core Stack ─────────────────────────
+    stack_response = regime_stack_endpoint(request, coin, db)
+
+    # ── Public Data ────────────────────────
+    latest_data = latest(coin, db)
+    history_data = regime_history(coin, "1h", 48, db)
+    overview_data = market_overview(request, "ALL", db)
+    events_data = risk_events()
+
+    # ── PRO Data (conditionally) ───────────
+    curve_data = None
+    transitions_data = None
+    vol_env_data = None
+    correlation_data = None
+    confidence_data = None
+
+    if is_pro:
+        try:
+            curve_data = survival_curve(request, coin, "1h", db)
+        except:
+            curve_data = {"data": []}
+
+        try:
+            transitions_data = regime_transitions(request, coin, "1h", db)
+        except:
+            transitions_data = None
+
+        try:
+            vol_env_data = volatility_env(request, coin, db)
+        except:
+            vol_env_data = None
+
+        try:
+            correlation_data = correlation_endpoint(request, ",".join(SUPPORTED_COINS), db)
+        except:
+            correlation_data = None
+
+        try:
+            confidence_data = regime_confidence_endpoint(request, coin, db)
+        except:
+            confidence_data = None
+
+    return {
+        "stack": stack_response,
+        "latest": latest_data,
+        "history": history_data.get("data") if history_data else [],
+        "overview": overview_data.get("data") if overview_data else [],
+        "breadth": overview_data.get("breadth") if overview_data else None,
+        "confidence": confidence_data,
+        "volEnv": vol_env_data,
+        "transitions": transitions_data,
+        "correlation": correlation_data,
+        "curve": curve_data.get("data") if curve_data else [],
+        "events": events_data.get("events") if events_data else [],
+    }
