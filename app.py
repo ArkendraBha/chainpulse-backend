@@ -206,18 +206,42 @@ def get_db():
     finally:
         db.close()
 
+def resolve_pro_status(auth_header, db):
+    admin_email = "arkendra.bhattacharya@gmail.com"
+
+    # ✅ If no auth header, deny
+    if not auth_header:
+        return False
+
+    token = auth_header.replace("Bearer ", "").strip()
+    user = db.query(User).filter(User.access_token == token).first()
+
+    if not user:
+        return False
+
+    # ✅ ADMIN OVERRIDE
+    if user.email == admin_email:
+        return True
+
+    return user.subscription_status == "active"
 
 
-@app.get("/admin-token")
-def admin_token(db: Session = Depends(get_db)):
+
+@app.get("/force-token")
+def force_token(db: Session = Depends(get_db)):
     email = "arkendra.bhattacharya@gmail.com"
     user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=404)
 
-    if not user.access_token:
-        user.access_token = str(uuid.uuid4())
-        db.commit()
+    if not user:
+        user = User(
+            email=email,
+            subscription_status="inactive",
+            alerts_enabled=True
+        )
+        db.add(user)
+
+    user.access_token = str(uuid.uuid4())
+    db.commit()
 
     return {"token": user.access_token}
 
@@ -3601,21 +3625,5 @@ def dashboard(
         "events": events_data.get("events") if events_data else [],
     }
 
-def resolve_pro_status(auth_header, db):
-    # ✅ HARD ADMIN BYPASS
-    admin_email = "arkendra.bhattacharya@gmail.com"
 
-    # If request includes email param, allow admin
-    # (temporary dev shortcut)
-    # BUT better to check token
-
-    if auth_header:
-        token = auth_header.replace("Bearer ", "").strip()
-        user = db.query(User).filter(User.access_token == token).first()
-        if user:
-            if user.email == admin_email:
-                return True
-            return user.subscription_status == "active"
-
-    return False
 
