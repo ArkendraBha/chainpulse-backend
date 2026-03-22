@@ -1,10 +1,9 @@
-name: ChainPulse Market Cron
+name: Hourly updates + alerts
 
 on:
   schedule:
     - cron: "0 * * * *"      # Every hour — market update
     - cron: "15 * * * *"     # Every hour at :15 — alerts
-    - cron: "0 8 * * *"      # Every day 08:00 UTC — morning email
   workflow_dispatch:
 
 jobs:
@@ -31,15 +30,4 @@ jobs:
         run: |
           curl -f "https://chainpulse-backend-2xok.onrender.com/send-alerts?secret=${{ secrets.UPDATE_SECRET }}"
 
-  morning-email:
-    name: Morning Regime Brief
-    runs-on: ubuntu-latest
-    steps:
-      - name: Wake up Render
-        run: |
-          curl -s "https://chainpulse-backend-2xok.onrender.com/health" || true
-          sleep 30
-
-      - name: Send morning emails
-        run: |
-          curl -f "https://chainpulse-backend-2xok.onrender.com/send-morning-email?secret=${{ secrets.UPDATE_SECRET }}"
+ 
