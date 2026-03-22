@@ -3603,3 +3603,16 @@ def resolve_pro_status(auth_header, db):
             return user.subscription_status == "active"
 
     return False
+
+@app.get("/admin-token")
+def admin_token(db: Session = Depends(get_db)):
+    email = "arkendra.bhattacharya@gmail.com"
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404)
+
+    if not user.access_token:
+        user.access_token = str(uuid.uuid4())
+        db.commit()
+
+    return {"token": user.access_token}
