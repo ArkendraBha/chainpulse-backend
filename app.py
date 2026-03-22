@@ -3601,3 +3601,8 @@ def make_me_pro(secret: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "pro_enabled", "token": user.access_token}
+
+@app.get("/debug-users")
+def debug_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return [{"email": u.email, "status": u.subscription_status} for u in users]
