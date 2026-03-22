@@ -131,7 +131,7 @@ class PerformanceEntry(Base):
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="ChainPulse API", version="4.1")
+app = FastAPI(title="ChainPulse API", version="4.2")
 
 
 app.add_middleware(
