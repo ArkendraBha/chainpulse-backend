@@ -3586,3 +3586,18 @@ def dashboard(
         "events": events_data.get("events") if events_data else [],
     }
 
+def resolve_pro_status(auth_header, db):
+    if not auth_header:
+        return False
+
+    token = auth_header.replace("Bearer ", "").strip()
+
+    user = db.query(User).filter(User.access_token == token).first()
+    if not user:
+        return False
+
+    # ✅ ADMIN OVERRIDE
+    if user.email == "arkendra.bhattacharya@gmail.com":
+        return True
+
+    return user.subscription_status == "active"
