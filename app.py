@@ -3587,17 +3587,19 @@ def dashboard(
     }
 
 def resolve_pro_status(auth_header, db):
-    if not auth_header:
-        return False
+    # ✅ HARD ADMIN BYPASS
+    admin_email = "arkendra.bhattacharya@gmail.com"
 
-    token = auth_header.replace("Bearer ", "").strip()
+    # If request includes email param, allow admin
+    # (temporary dev shortcut)
+    # BUT better to check token
 
-    user = db.query(User).filter(User.access_token == token).first()
-    if not user:
-        return False
+    if auth_header:
+        token = auth_header.replace("Bearer ", "").strip()
+        user = db.query(User).filter(User.access_token == token).first()
+        if user:
+            if user.email == admin_email:
+                return True
+            return user.subscription_status == "active"
 
-    # ✅ ADMIN OVERRIDE
-    if user.email == "arkendra.bhattacharya@gmail.com":
-        return True
-
-    return user.subscription_status == "active"
+    return False
