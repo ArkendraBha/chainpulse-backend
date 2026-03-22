@@ -3586,23 +3586,3 @@ def dashboard(
         "events": events_data.get("events") if events_data else [],
     }
 
-@app.get("/make-me-pro")
-def make_me_pro(secret: str, db: Session = Depends(get_db)):
-    if secret != UPDATE_SECRET:
-        raise HTTPException(status_code=403)
-
-    user = db.query(User).filter(User.email == "arkendra.bhattacharya@email.com").first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user.subscription_status = "active"
-    user.alerts_enabled = True
-    user.access_token = str(uuid.uuid4())
-    db.commit()
-
-    return {"status": "pro_enabled", "token": user.access_token}
-
-@app.get("/debug-users")
-def debug_users(db: Session = Depends(get_db)):
-    users = db.query(User).all()
-    return [{"email": u.email, "status": u.subscription_status} for u in users]
