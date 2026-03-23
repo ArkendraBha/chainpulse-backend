@@ -216,7 +216,7 @@ def resolve_pro_status(auth_header, db):
     if not user:
         return False
 
-    # ✅ Permanent admin override
+    # ✅ HARD ADMIN OVERRIDE
     if user.email == "arkendra.bhattacharya@gmail.com":
         return True
 
