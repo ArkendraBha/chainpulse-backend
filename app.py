@@ -245,6 +245,22 @@ def force_token(db: Session = Depends(get_db)):
 
     return {"token": user.access_token}
 
+@app.get("/debug-auth")
+def debug_auth(request: Request, db: Session = Depends(get_db)):
+    auth = request.headers.get("Authorization")
+    if not auth:
+        return {"auth": None}
+
+    token = auth.replace("Bearer ", "").strip()
+    user = db.query(User).filter(User.access_token == token).first()
+
+    return {
+        "token": token,
+        "user_found": bool(user),
+        "email": user.email if user else None,
+        "subscription_status": user.subscription_status if user else None,
+    }
+
 # ─────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────
