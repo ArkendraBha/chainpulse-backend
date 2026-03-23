@@ -207,9 +207,6 @@ def get_db():
         db.close()
 
 def resolve_pro_status(auth_header, db):
-    admin_email = "arkendra.bhattacharya@gmail.com"
-
-    # ✅ If no auth header, deny
     if not auth_header:
         return False
 
@@ -219,11 +216,14 @@ def resolve_pro_status(auth_header, db):
     if not user:
         return False
 
-    # ✅ ADMIN OVERRIDE
-    if user.email == admin_email:
+    # ✅ Permanent admin override
+    if user.email == "arkendra.bhattacharya@gmail.com":
         return True
 
-    return user.subscription_status == "active"
+    if user.subscription_status == "active":
+        return True
+
+    return False
 
 
 
@@ -259,6 +259,18 @@ def debug_auth(request: Request, db: Session = Depends(get_db)):
         "user_found": bool(user),
         "email": user.email if user else None,
         "subscription_status": user.subscription_status if user else None,
+    }
+
+@app.get("/debug-pro")
+def debug_pro(request: Request, db: Session = Depends(get_db)):
+    auth = request.headers.get("Authorization")
+    token = auth.replace("Bearer ", "").strip()
+    user = db.query(User).filter(User.access_token == token).first()
+
+    return {
+        "email": user.email,
+        "subscription_status": user.subscription_status,
+        "is_admin_check": user.email == "arkendra.bhattacharya@gmail.com"
     }
 
 # ─────────────────────────────────────────
