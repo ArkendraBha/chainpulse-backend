@@ -129,7 +129,306 @@ class PerformanceEntry(Base):
     discipline_flags   = Column(String, default="")
 
 
+
+# ─────────────────────────────────────────
+# NEW DATABASE MODELS (add after existing models)
+# ─────────────────────────────────────────
+
+class SetupQualityCache(Base):
+    __tablename__ = "setup_quality_cache"
+    id            = Column(Integer, primary_key=True)
+    coin          = Column(String, index=True)
+    timeframe     = Column(String, default="1h")
+    setup_score   = Column(Float, default=50)
+    chase_risk    = Column(Float, default=50)
+    exhaustion    = Column(Float, default=50)
+    entry_mode    = Column(String, default="Wait")
+    setup_label   = Column(String, default="Neutral")
+    optimal_entry_low  = Column(Float, default=0)
+    optimal_entry_high = Column(Float, default=0)
+    invalidation_level = Column(Float, default=0)
+    created_at    = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class HistoricalAnalog(Base):
+    __tablename__   = "historical_analogs"
+    id              = Column(Integer, primary_key=True)
+    coin            = Column(String, index=True)
+    macro_label     = Column(String)
+    trend_label     = Column(String)
+    exec_label      = Column(String)
+    score_at_time   = Column(Float)
+    hazard_at_time  = Column(Float, default=0)
+    forward_1d_ret  = Column(Float, nullable=True)
+    forward_3d_ret  = Column(Float, nullable=True)
+    forward_7d_ret  = Column(Float, nullable=True)
+    max_adverse_exc = Column(Float, nullable=True)
+    created_at      = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class BehavioralLeak(Base):
+    __tablename__      = "behavioral_leaks"
+    id                 = Column(Integer, primary_key=True)
+    email              = Column(String, index=True)
+    leak_type          = Column(String)
+    frequency          = Column(Integer, default=0)
+    alpha_drag_pct     = Column(Float, default=0)
+    last_occurrence    = Column(DateTime, nullable=True)
+    created_at         = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class AlertThreshold(Base):
+    __tablename__         = "alert_thresholds"
+    id                    = Column(Integer, primary_key=True)
+    email                 = Column(String, index=True)
+    coin                  = Column(String, default="BTC")
+    shift_risk_threshold  = Column(Float, default=70)
+    exposure_change_threshold = Column(Float, default=10)
+    setup_quality_threshold   = Column(Float, default=70)
+    regime_quality_threshold  = Column(Float, default=50)
+    enabled               = Column(Boolean, default=True)
+    created_at            = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class TradePlan(Base):
+    __tablename__      = "trade_plans"
+    id                 = Column(Integer, primary_key=True)
+    email              = Column(String, index=True)
+    coin               = Column(String, default="BTC")
+    bias               = Column(String, default="Long")
+    allocation_band    = Column(String, default="40-60%")
+    entry_style        = Column(String, default="Pullback")
+    tranches           = Column(String, default="[20,20,15]")
+    invalidation_note  = Column(String, default="")
+    profit_targets     = Column(String, default="[]")
+    time_horizon_days  = Column(Integer, default=5)
+    status             = Column(String, default="active")
+    created_at         = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class IntelligenceBrief(Base):
+    __tablename__ = "intelligence_briefs"
+    id            = Column(Integer, primary_key=True)
+    brief_type    = Column(String, default="weekly")
+    content_json  = Column(String, default="{}")
+    created_at    = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# Recreate tables
 Base.metadata.create_all(bind=engine)
+
+
+# ─────────────────────────────────────────
+# NEW PYDANTIC MODELS
+# ─────────────────────────────────────────
+
+class AlertThresholdRequest(BaseModel):
+    email: str
+    coin: str = "BTC"
+    shift_risk_threshold: float = 70
+    exposure_change_threshold: float = 10
+    setup_quality_threshold: float = 70
+    regime_quality_threshold: float = 50
+
+
+class TradePlanRequest(BaseModel):
+    email: str
+    coin: str = "BTC"
+    account_size: float = 10000
+    strategy_mode: str = "balanced"
+
+
+class BehavioralReportRequest(BaseModel):
+    email: str
+    lookback_days: int = 30
+
+
+class TraderArchetype(BaseModel):
+    email: str
+    archetype: str = "swing"  # swing, position, spot_allocator, tactical, leverage
+
+
+# ─────────────────────────────────────────
+# TRADER ARCHETYPE CONFIGURATIONS
+# ─────────────────────────────────────────
+
+ARCHETYPE_CONFIG = {
+    "swing": {
+        "label": "Swing Trader",
+        "exposure_mult": 1.0,
+        "alert_sensitivity": "medium",
+        "preferred_timeframe": "4h",
+        "max_hold_days": 14,
+        "stop_width_mult": 1.0,
+        "typical_tranches": [30, 30, 20],
+        "playbook_bias": "trend_follow",
+        "description": "Holds positions for days to weeks. Follows intermediate trends.",
+    },
+    "position": {
+        "label": "Position Trader",
+        "exposure_mult": 0.85,
+        "alert_sensitivity": "low",
+        "preferred_timeframe": "1d",
+        "max_hold_days": 60,
+        "stop_width_mult": 1.5,
+        "typical_tranches": [25, 25, 25, 15],
+        "playbook_bias": "macro_follow",
+        "description": "Longer-term conviction trades. Macro regime driven.",
+    },
+    "spot_allocator": {
+        "label": "Spot Allocator",
+        "exposure_mult": 0.75,
+        "alert_sensitivity": "low",
+        "preferred_timeframe": "1d",
+        "max_hold_days": 90,
+        "stop_width_mult": 2.0,
+        "typical_tranches": [20, 20, 20, 20],
+        "playbook_bias": "buy_and_hold",
+        "description": "DCA-oriented. Uses regime data for timing allocation size.",
+    },
+    "tactical": {
+        "label": "Tactical De-risker",
+        "exposure_mult": 1.1,
+        "alert_sensitivity": "high",
+        "preferred_timeframe": "1h",
+        "max_hold_days": 7,
+        "stop_width_mult": 0.8,
+        "typical_tranches": [35, 35, 20],
+        "playbook_bias": "mean_revert",
+        "description": "Active risk management. Quickly adjusts exposure to regime changes.",
+    },
+    "leverage": {
+        "label": "Leverage Trader",
+        "exposure_mult": 1.3,
+        "alert_sensitivity": "high",
+        "preferred_timeframe": "1h",
+        "max_hold_days": 5,
+        "stop_width_mult": 0.6,
+        "typical_tranches": [40, 30, 20],
+        "playbook_bias": "momentum",
+        "description": "Uses leverage. Needs tightest risk controls and fastest alerts.",
+    },
+}
+
+
+# ─────────────────────────────────────────
+# RISK EVENT CALENDAR (DYNAMIC)
+# ─────────────────────────────────────────
+
+DYNAMIC_RISK_EVENTS = [
+    {
+        "name": "FOMC Meeting",
+        "type": "macro",
+        "impact": "High",
+        "recurrence": "6_weeks",
+        "typical_vol_multiplier": 1.8,
+        "regime_survival_impact": -15,
+    },
+    {
+        "name": "CPI Release",
+        "type": "macro",
+        "impact": "High",
+        "recurrence": "monthly",
+        "typical_vol_multiplier": 1.6,
+        "regime_survival_impact": -12,
+    },
+    {
+        "name": "Options Expiry",
+        "type": "market",
+        "impact": "Medium",
+        "recurrence": "monthly",
+        "typical_vol_multiplier": 1.3,
+        "regime_survival_impact": -8,
+    },
+    {
+        "name": "ETF Flow Report",
+        "type": "market",
+        "impact": "Medium",
+        "recurrence": "weekly",
+        "typical_vol_multiplier": 1.1,
+        "regime_survival_impact": -5,
+    },
+    {
+        "name": "PCE Inflation",
+        "type": "macro",
+        "impact": "High",
+        "recurrence": "monthly",
+        "typical_vol_multiplier": 1.5,
+        "regime_survival_impact": -10,
+    },
+    {
+        "name": "Fed Minutes",
+        "type": "macro",
+        "impact": "Medium",
+        "recurrence": "6_weeks",
+        "typical_vol_multiplier": 1.3,
+        "regime_survival_impact": -8,
+    },
+    {
+        "name": "Jobs Report (NFP)",
+        "type": "macro",
+        "impact": "High",
+        "recurrence": "monthly",
+        "typical_vol_multiplier": 1.5,
+        "regime_survival_impact": -12,
+    },
+    {
+        "name": "Quarterly GDP",
+        "type": "macro",
+        "impact": "Medium",
+        "recurrence": "quarterly",
+        "typical_vol_multiplier": 1.2,
+        "regime_survival_impact": -6,
+    },
+]
+
+
+# ─────────────────────────────────────────
+# BEHAVIORAL LEAK TYPES
+# ─────────────────────────────────────────
+
+LEAK_TYPES = {
+    "late_entry_chasing": {
+        "label": "Late Entry / Chasing",
+        "description": "Entering positions after significant extension, when chase risk is high.",
+        "severity_weight": 1.5,
+    },
+    "overexposed_risk_off": {
+        "label": "Over-Exposed in Risk-Off",
+        "description": "Maintaining high exposure when regime signals defensive positioning.",
+        "severity_weight": 2.0,
+    },
+    "ignored_hazard_spike": {
+        "label": "Ignored Hazard Spike",
+        "description": "Failed to reduce exposure when hazard rate spiked above 65%.",
+        "severity_weight": 1.8,
+    },
+    "premature_exit_strength": {
+        "label": "Premature Exit in Strength",
+        "description": "Reducing exposure during strong, healthy regime conditions.",
+        "severity_weight": 1.0,
+    },
+    "averaging_down_risk_off": {
+        "label": "Averaging Down in Risk-Off",
+        "description": "Adding to losing positions during deteriorating regime.",
+        "severity_weight": 2.5,
+    },
+    "overtrading": {
+        "label": "Overtrading",
+        "description": "Logging exposure changes too frequently relative to regime changes.",
+        "severity_weight": 1.2,
+    },
+    "size_too_large": {
+        "label": "Position Size Too Large",
+        "description": "Exposure consistently exceeds model recommendation by >25%.",
+        "severity_weight": 1.8,
+    },
+    "failed_to_press_edge": {
+        "label": "Failed to Press Edge",
+        "description": "Under-exposed during high-quality regime conditions where user has historical edge.",
+        "severity_weight": 1.0,
+    },
+}
 
 app = FastAPI(title="ChainPulse API", version="4.2")
 
