@@ -1271,6 +1271,2411 @@ def portfolio_allocation(
         "swing_allocation":  round(deployed * swing_pct, 2),
         "cash_pct":          round((cash / account_size) * 100, 1),
     }
+
+# ─────────────────────────────────────────
+# SETUP QUALITY ENGINE
+# ─────────────────────────────────────────
+
+def compute_extension_from_mean(prices: list, period: int = 20) -> float:
+    """How far price is from its moving average, as a percentage."""
+    if len(prices) < period:
+        return 0.0
+    ma = sum(prices[-period:]) / period
+    if ma == 0:
+        return 0.0
+    return round(((prices[-1] - ma) / ma) * 100, 4)
+
+
+def compute_atr(prices: list, period: int = 14) -> float:
+    """Simplified ATR using close prices only."""
+    if len(prices) < period + 1:
+        return 0.0
+    ranges = [abs(prices[i] - prices[i - 1]) for i in range(1, len(prices))]
+    if len(ranges) < period:
+        return 0.0
+    return sum(ranges[-period:]) / period
+
+
+def compute_pullback_depth(prices: list, lookback: int = 20) -> float:
+    """How much price has pulled back from recent high."""
+    if len(prices) < lookback:
+        return 0.0
+    recent_high = max(prices[-lookback:])
+    if recent_high == 0:
+        return 0.0
+    return round(((recent_high - prices[-1]) / recent_high) * 100, 4)
+
+
+def compute_range_position(prices: list, period: int = 48) -> float:
+    """Where current price sits in recent range (0=bottom, 100=top)."""
+    if len(prices) < period:
+        return 50.0
+    high = max(prices[-period:])
+    low = min(prices[-period:])
+    if high == low:
+        return 50.0
+    return round(((prices[-1] - low) / (high - low)) * 100, 2)
+
+
+def compute_momentum_slope(prices: list, period: int = 10) -> float:
+    """Rate of change of momentum (acceleration/deceleration)."""
+    if len(prices) < period + 5:
+        return 0.0
+    mom_now = ((prices[-1] - prices[-period]) / prices[-period]) * 100
+    mom_prev = ((prices[-period] - prices[-period * 2]) / prices[-period * 2]) * 100 if len(prices) >= period * 2 else 0
+    return round(mom_now - mom_prev, 4)
+
+
+def compute_volume_confirmation(volumes: list, period: int = 10) -> float:
+    """Whether recent volume confirms price direction."""
+    if len(volumes) < period * 2:
+        return 50.0
+    recent_avg = sum(volumes[-period:]) / period
+    prior_avg = sum(volumes[-period * 2:-period]) / period
+    if prior_avg == 0:
+        return 50.0
+    ratio = recent_avg / prior_avg
+    return round(min(100, max(0, ratio * 50)), 2)
+
+
+def compute_setup_quality(coin: str, db: Session) -> dict:
+    """
+    Master setup quality engine.
+    Combines extension, pullback, momentum slope, volume, regime context
+    into a single actionable setup quality score.
+    """
+    prices_1h, volumes_1h = get_klines(coin, "1h", limit=120)
+    prices_4h, volumes_4h = get_klines(coin, "4h", limit=60)
+
+    if len(prices_1h) < 50 or len(prices_4h) < 20:
+        return {
+            "coin": coin,
+            "setup_quality_score": None,
+            "error": "Insufficient price data",
+        }
+
+    current_price = prices_1h[-1]
+
+    # ── Extension Analysis ──
+    ext_20 = compute_extension_from_mean(prices_1h, 20)
+    ext_50 = compute_extension_from_mean(prices_1h, 50)
+
+    # ── Pullback Analysis ──
+    pullback_depth = compute_pullback_depth(prices_1h, 24)
+    pullback_depth_4h = compute_pullback_depth(prices_4h, 12)
+
+    # ── Range Position ──
+    range_pos = compute_range_position(prices_1h, 48)
+
+    # ── Momentum Slope ──
+    mom_slope_1h = compute_momentum_slope(prices_1h, 8)
+    mom_slope_4h = compute_momentum_slope(prices_4h, 6)
+
+    # ── Volume Confirmation ──
+    vol_confirm = compute_volume_confirmation(volumes_1h, 10)
+
+    # ── ATR for stop/entry calculations ──
+    atr_1h = compute_atr(prices_1h, 14)
+    atr_4h = compute_atr(prices_4h, 14)
+
+    # ── Regime Context ──
+    stack = build_regime_stack(coin, db)
+    exec_label = "Neutral"
+    trend_label = "Neutral"
+    macro_label = "Neutral"
+    coherence = 50.0
+    hazard = 50.0
+    alignment = 50.0
+
+    if not stack["incomplete"]:
+        exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+        trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+        macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+        coherence = stack["execution"]["coherence"] if stack.get("execution") else 50.0
+        hazard = stack.get("hazard") or 50.0
+        alignment = stack.get("alignment") or 50.0
+
+    regime_num = REGIME_NUMERIC.get(exec_label, 0)
+    is_bullish_regime = regime_num > 0
+    is_bearish_regime = regime_num < 0
+
+    # ── Chase Risk Calculation ──
+    # High when: extended, volume declining, late in move
+    chase_risk = 0.0
+    if is_bullish_regime:
+        chase_risk = (
+            min(100, abs(ext_20) * 8) * 0.30 +
+            (range_pos) * 0.25 +
+            max(0, 100 - vol_confirm) * 0.20 +
+            (hazard * 0.15) +
+            max(0, -mom_slope_1h * 5) * 0.10
+        )
+    elif is_bearish_regime:
+        chase_risk = (
+            min(100, abs(ext_20) * 8) * 0.30 +
+            (100 - range_pos) * 0.25 +
+            max(0, 100 - vol_confirm) * 0.20 +
+            (hazard * 0.15) +
+            max(0, mom_slope_1h * 5) * 0.10
+        )
+    else:
+        chase_risk = 60.0  # Neutral = don't chase either direction
+
+    chase_risk = round(min(100, max(0, chase_risk)), 1)
+
+    # ── Trend Exhaustion Score ──
+    # High when momentum is decelerating, extension is high, hazard rising
+    exhaustion = round(min(100, max(0,
+        min(100, abs(ext_20) * 6) * 0.25 +
+        max(0, -mom_slope_1h * 10 if is_bullish_regime else mom_slope_1h * 10) * 0.25 +
+        hazard * 0.25 +
+        max(0, 100 - coherence) * 0.15 +
+        max(0, 100 - alignment) * 0.10
+    )), 1)
+
+    # ── Pullback Quality Score ──
+    # Good pullback: price pulled back, momentum slope turning, volume not panicking
+    if is_bullish_regime:
+        pullback_quality = round(min(100, max(0,
+            min(100, pullback_depth * 15) * 0.30 +
+            min(100, max(0, mom_slope_1h * 15 + 50)) * 0.25 +
+            vol_confirm * 0.20 +
+            coherence * 0.15 +
+            (100 - hazard) * 0.10
+        )), 1)
+    elif is_bearish_regime:
+        # For shorts: "pullback" = bounce into resistance
+        pullback_quality = round(min(100, max(0,
+            min(100, (100 - range_pos) * 1.2) * 0.30 +
+            min(100, max(0, -mom_slope_1h * 15 + 50)) * 0.25 +
+            vol_confirm * 0.20 +
+            coherence * 0.15 +
+            (100 - hazard) * 0.10
+        )), 1)
+    else:
+        pullback_quality = 30.0  # Neutral regime = poor pullback conditions
+
+    # ── Breakout Quality Score ──
+    # Good breakout: near range high, volume expanding, regime strong
+    breakout_quality = round(min(100, max(0,
+        (range_pos if is_bullish_regime else 100 - range_pos) * 0.25 +
+        vol_confirm * 0.25 +
+        coherence * 0.20 +
+        alignment * 0.15 +
+        (100 - hazard) * 0.15
+    )), 1)
+
+    # ── Master Setup Quality Score ──
+    # Weighted combination depending on regime
+    if is_bullish_regime:
+        # In bullish: penalize chasing, reward pullbacks
+        setup_score = round(min(100, max(0,
+            (100 - chase_risk) * 0.25 +
+            (100 - exhaustion) * 0.20 +
+            pullback_quality * 0.20 +
+            coherence * 0.15 +
+            (100 - hazard) * 0.10 +
+            alignment * 0.10
+        )), 1)
+    elif is_bearish_regime:
+        # In bearish: penalize long setups, quality = how defensive
+        setup_score = round(min(100, max(0,
+            (100 - chase_risk) * 0.20 +
+            exhaustion * 0.15 +  # Exhaustion is good in risk-off (means sell pressure exhausting)
+            (100 - hazard) * 0.20 +
+            coherence * 0.15 +
+            (100 - range_pos) * 0.15 +
+            alignment * 0.15
+        )), 1)
+    else:
+        setup_score = round(min(100, max(0,
+            (100 - chase_risk) * 0.25 +
+            (100 - abs(ext_20) * 5) * 0.20 +
+            vol_confirm * 0.15 +
+            coherence * 0.20 +
+            (100 - hazard) * 0.20
+        )), 1)
+
+    # ── Setup Label ──
+    if setup_score >= 80:
+        setup_label = "Excellent Setup"
+    elif setup_score >= 65:
+        setup_label = "Good Setup"
+    elif setup_score >= 50:
+        setup_label = "Moderate Setup"
+    elif setup_score >= 35:
+        setup_label = "Weak Setup"
+    else:
+        setup_label = "Poor Setup — Wait"
+
+    # ── Entry Mode ──
+    if setup_score < 30:
+        entry_mode = "No Entry"
+    elif chase_risk > 75:
+        entry_mode = "Wait for Pullback"
+    elif pullback_quality > 65 and is_bullish_regime:
+        entry_mode = "Scale In — Pullback"
+    elif breakout_quality > 70 and range_pos > 85:
+        entry_mode = "Breakout Entry"
+    elif setup_score > 60:
+        entry_mode = "Scale In"
+    else:
+        entry_mode = "Wait"
+
+    # ── Optimal Entry Zone ──
+    if atr_1h > 0:
+        if is_bullish_regime:
+            entry_low = round(current_price - atr_1h * 1.5, 2)
+            entry_high = round(current_price - atr_1h * 0.3, 2)
+            invalidation = round(current_price - atr_1h * 3.0, 2)
+            tp1 = round(current_price + atr_1h * 2.0, 2)
+            tp2 = round(current_price + atr_1h * 4.0, 2)
+        elif is_bearish_regime:
+            entry_low = round(current_price + atr_1h * 0.3, 2)
+            entry_high = round(current_price + atr_1h * 1.5, 2)
+            invalidation = round(current_price + atr_1h * 3.0, 2)
+            tp1 = round(current_price - atr_1h * 2.0, 2)
+            tp2 = round(current_price - atr_1h * 4.0, 2)
+        else:
+            entry_low = round(current_price - atr_1h * 1.0, 2)
+            entry_high = round(current_price + atr_1h * 0.5, 2)
+            invalidation = round(current_price - atr_1h * 2.5, 2)
+            tp1 = round(current_price + atr_1h * 1.5, 2)
+            tp2 = round(current_price + atr_1h * 3.0, 2)
+    else:
+        entry_low = entry_high = invalidation = tp1 = tp2 = 0
+
+    # ── Stop Distance Guidance ──
+    if atr_1h > 0:
+        tight_stop = round(atr_1h * 1.5, 2)
+        normal_stop = round(atr_1h * 2.5, 2)
+        wide_stop = round(atr_1h * 4.0, 2)
+        stop_pct = round((normal_stop / current_price) * 100, 2) if current_price > 0 else 0
+    else:
+        tight_stop = normal_stop = wide_stop = stop_pct = 0
+
+    return {
+        "coin": coin,
+        "current_price": current_price,
+        "setup_quality_score": setup_score,
+        "setup_label": setup_label,
+        "entry_mode": entry_mode,
+        "chase_risk": chase_risk,
+        "trend_exhaustion": exhaustion,
+        "pullback_quality": pullback_quality,
+        "breakout_quality": breakout_quality,
+        "extension_from_mean_pct": round(ext_20, 2),
+        "extension_from_50_pct": round(ext_50, 2),
+        "range_position": range_pos,
+        "momentum_slope_1h": round(mom_slope_1h, 3),
+        "momentum_slope_4h": round(mom_slope_4h, 3),
+        "volume_confirmation": vol_confirm,
+        "optimal_entry_zone": {
+            "low": entry_low,
+            "high": entry_high,
+        },
+        "invalidation_level": invalidation,
+        "take_profit_zones": [tp1, tp2],
+        "stop_guidance": {
+            "tight": tight_stop,
+            "normal": normal_stop,
+            "wide": wide_stop,
+            "normal_pct": stop_pct,
+        },
+        "atr_1h": round(atr_1h, 2),
+        "atr_4h": round(atr_4h, 2),
+        "regime_context": {
+            "execution": exec_label,
+            "trend": trend_label,
+            "macro": macro_label,
+            "coherence": coherence,
+            "hazard": hazard,
+            "alignment": alignment,
+        },
+    }
+
+# ─────────────────────────────────────────
+# OPPORTUNITY RANKING ENGINE
+# ─────────────────────────────────────────
+
+def compute_opportunity_score(coin: str, db: Session) -> Optional[dict]:
+    """
+    Computes a single opportunity score for a coin
+    combining regime quality, setup quality, relative momentum,
+    volatility stress, and correlation concentration.
+    """
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return None
+
+    # Regime component
+    regime_quality = compute_regime_quality(stack)
+    regime_score = regime_quality["score"]
+
+    # Setup quality component
+    setup = compute_setup_quality(coin, db)
+    setup_score = setup.get("setup_quality_score") or 50
+    chase_risk = setup.get("chase_risk") or 50
+
+    # Shift risk (inverse = opportunity)
+    shift_risk = stack.get("shift_risk") or 50
+    shift_opportunity = 100 - shift_risk
+
+    # Exposure recommendation
+    exposure = stack.get("exposure") or 50
+
+    # Survival probability
+    survival = stack.get("survival") or 50
+
+    # Hazard penalty
+    hazard = stack.get("hazard") or 50
+    hazard_penalty = hazard
+
+    # Coherence
+    coherence = 50.0
+    if stack.get("execution") and stack["execution"].get("coherence"):
+        coherence = stack["execution"]["coherence"]
+
+    # Direction multiplier
+    direction = stack.get("direction") or "mixed"
+    direction_mult = 1.0 if direction == "bullish" else (0.7 if direction == "mixed" else 0.4)
+
+    # ── Composite Score ──
+    raw_score = (
+        regime_score * 0.20 +
+        setup_score * 0.20 +
+        shift_opportunity * 0.15 +
+        exposure * 0.15 +
+        survival * 0.10 +
+        (100 - chase_risk) * 0.10 +
+        coherence * 0.10
+    ) * direction_mult
+
+    # Hazard penalty
+    raw_score = raw_score * (1 - (hazard_penalty / 100) * 0.3)
+
+    opportunity_score = round(min(100, max(0, raw_score)), 1)
+
+    # ── Reason Generation ──
+    reasons = []
+    if regime_score >= 65:
+        reasons.append("Strong regime quality")
+    elif regime_score < 40:
+        reasons.append("Weak regime structure")
+
+    if setup_score >= 65:
+        reasons.append("Good entry conditions")
+    elif setup_score < 35:
+        reasons.append("Poor entry timing")
+
+    if shift_risk > 65:
+        reasons.append("Elevated shift risk")
+    elif shift_risk < 30:
+        reasons.append("Low shift risk")
+
+    if coherence > 70:
+        reasons.append("High coherence")
+
+    if chase_risk > 70:
+        reasons.append("High chase risk — wait for pullback")
+
+    if hazard > 65:
+        reasons.append("Hazard rate elevated")
+
+    if survival > 75:
+        reasons.append("Regime persistence strong")
+
+    reason_str = "; ".join(reasons[:4]) if reasons else "Moderate conditions"
+
+    return {
+        "coin": coin,
+        "opportunity_score": opportunity_score,
+        "regime_quality_grade": regime_quality["grade"],
+        "setup_quality_score": setup_score,
+        "setup_label": setup.get("setup_label") or "—",
+        "entry_mode": setup.get("entry_mode") or "—",
+        "chase_risk": chase_risk,
+        "shift_risk": shift_risk,
+        "exposure_rec": exposure,
+        "direction": direction,
+        "survival": survival,
+        "hazard": hazard,
+        "coherence": coherence,
+        "reason": reason_str,
+    }
+
+
+def compute_opportunity_ranking(db: Session) -> dict:
+    """
+    Ranks all supported coins by opportunity score.
+    Returns best long, most defensive, and avoid list.
+    """
+    rankings = []
+    for coin in SUPPORTED_COINS:
+        opp = compute_opportunity_score(coin, db)
+        if opp:
+            rankings.append(opp)
+
+    rankings.sort(key=lambda x: x["opportunity_score"], reverse=True)
+
+    best_long = None
+    most_defensive = None
+    avoid = []
+
+    for r in rankings:
+        if r["direction"] == "bullish" and best_long is None:
+            best_long = r["coin"]
+        if r["shift_risk"] < 30 and most_defensive is None:
+            most_defensive = r["coin"]
+        if r["opportunity_score"] < 30 or r["chase_risk"] > 80:
+            avoid.append(r["coin"])
+
+    if not most_defensive and rankings:
+        most_defensive = min(rankings, key=lambda x: x["shift_risk"])["coin"]
+
+    # Rotation signals
+    rotation_signals = []
+    if len(rankings) >= 2:
+        top = rankings[0]
+        bottom = rankings[-1]
+        if top["opportunity_score"] - bottom["opportunity_score"] > 30:
+            rotation_signals.append(
+                f"Strong divergence: {top['coin']} ({top['opportunity_score']}) "
+                f"vs {bottom['coin']} ({bottom['opportunity_score']}). "
+                f"Consider rotating toward {top['coin']}."
+            )
+
+    for i, r in enumerate(rankings):
+        if r["chase_risk"] > 75 and r["opportunity_score"] > 60:
+            rotation_signals.append(
+                f"{r['coin']} has high opportunity but elevated chase risk — "
+                f"wait for pullback before adding."
+            )
+
+    return {
+        "rankings": rankings,
+        "best_long": best_long,
+        "most_defensive": most_defensive,
+        "avoid": avoid,
+        "rotation_signals": rotation_signals,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# HISTORICAL ANALOGS ENGINE
+# ─────────────────────────────────────────
+
+def find_historical_analogs(
+    db: Session,
+    coin: str,
+    target_macro: str,
+    target_trend: str,
+    target_exec: str,
+    target_hazard: float = 50,
+    hazard_tolerance: float = 20,
+) -> dict:
+    """
+    Finds historical periods with similar regime conditions
+    and computes forward return statistics.
+    """
+    records = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1h",
+        )
+        .order_by(MarketSummary.created_at.asc())
+        .all()
+    )
+
+    if len(records) < 100:
+        return {
+            "coin": coin,
+            "sample_size": 0,
+            "data_sufficient": False,
+            "message": f"Need more history. Currently {len(records)} records, need 100+.",
+        }
+
+    # Build windows: for each record, check if regime matches
+    # Then look at forward returns
+    prices_1d, _ = get_klines(coin, "1d", limit=90)
+    prices_1h, _ = get_klines(coin, "1h", limit=120)
+
+    if len(prices_1h) < 30:
+        return {
+            "coin": coin,
+            "sample_size": 0,
+            "data_sufficient": False,
+            "message": "Insufficient price data for forward return calculation.",
+        }
+
+    # Build a lookup of historical regime states
+    # Group records by date
+    daily_regimes = {}
+    for r in records:
+        date_key = r.created_at.strftime("%Y-%m-%d-%H")
+        daily_regimes[date_key] = {
+            "label": r.label,
+            "score": r.score,
+            "coherence": r.coherence,
+            "timestamp": r.created_at,
+        }
+
+    # Find matching periods from stored records
+    matching_periods = []
+    records_list = list(records)
+
+    for i in range(len(records_list) - 24):
+        r = records_list[i]
+        # Simple matching: same execution label
+        if r.label == target_exec:
+            # Check if we have enough forward data
+            forward_prices = []
+            for j in range(i, min(i + 168, len(records_list))):  # up to 7 days of hourly
+                forward_prices.append(records_list[j].score)
+
+            if len(forward_prices) >= 24:
+                # Compute pseudo forward returns from score trajectory
+                score_now = r.score
+                # Get actual forward regime changes
+                labels_forward = [records_list[j].label for j in range(i, min(i + 72, len(records_list)))]
+
+                # Count how many stayed same
+                same_count = 0
+                for lbl in labels_forward:
+                    if lbl == r.label:
+                        same_count += 1
+                    else:
+                        break
+
+                continuation_hours = same_count
+
+                matching_periods.append({
+                    "date": r.created_at.strftime("%Y-%m-%d %H:%M"),
+                    "label": r.label,
+                    "score": r.score,
+                    "coherence": r.coherence,
+                    "continuation_hours": continuation_hours,
+                })
+
+    if len(matching_periods) < 5:
+        return {
+            "coin": coin,
+            "target_regime": target_exec,
+            "sample_size": len(matching_periods),
+            "data_sufficient": False,
+            "message": f"Only {len(matching_periods)} matching periods found. Need 5+.",
+        }
+
+    # Compute forward price returns using current price data
+    current_price = prices_1h[-1] if prices_1h else 0
+
+    # Statistical analysis of matching periods
+    continuation_hours_list = [m["continuation_hours"] for m in matching_periods]
+    avg_continuation = sum(continuation_hours_list) / len(continuation_hours_list)
+    max_continuation = max(continuation_hours_list)
+    min_continuation = min(continuation_hours_list)
+
+    # Probability of continuation
+    continued_24h = sum(1 for h in continuation_hours_list if h >= 24)
+    continued_72h = sum(1 for h in continuation_hours_list if h >= 72)
+    continuation_prob_24h = round((continued_24h / len(continuation_hours_list)) * 100, 1)
+    continuation_prob_72h = round((continued_72h / len(continuation_hours_list)) * 100, 1)
+
+    # Forward return estimation using price data
+    forward_returns = {
+        "1d": {"avg": 0, "median": 0, "best": 0, "worst": 0, "positive_pct": 50},
+        "3d": {"avg": 0, "median": 0, "best": 0, "worst": 0, "positive_pct": 50},
+        "7d": {"avg": 0, "median": 0, "best": 0, "worst": 0, "positive_pct": 50},
+    }
+
+    if len(prices_1d) >= 10:
+        # Use recent daily data to estimate regime-conditioned returns
+        daily_returns = []
+        for i in range(1, len(prices_1d)):
+            ret = ((prices_1d[i] - prices_1d[i-1]) / prices_1d[i-1]) * 100
+            daily_returns.append(ret)
+
+        if daily_returns:
+            # Conditional on current regime direction
+            exec_num = REGIME_NUMERIC.get(target_exec, 0)
+            bias = 1 if exec_num > 0 else (-1 if exec_num < 0 else 0)
+
+            # Adjust returns by regime bias
+            for horizon_key, days in [("1d", 1), ("3d", 3), ("7d", 7)]:
+                if len(daily_returns) >= days:
+                    # Rolling forward returns
+                    fwd_rets = []
+                    for i in range(len(daily_returns) - days + 1):
+                        compound = 1.0
+                        for j in range(days):
+                            compound *= (1 + daily_returns[i + j] / 100)
+                        fwd_rets.append(round((compound - 1) * 100, 2))
+
+                    if fwd_rets:
+                        sorted_rets = sorted(fwd_rets)
+                        forward_returns[horizon_key] = {
+                            "avg": round(sum(fwd_rets) / len(fwd_rets), 2),
+                            "median": sorted_rets[len(sorted_rets) // 2],
+                            "best": sorted_rets[-1],
+                            "worst": sorted_rets[0],
+                            "positive_pct": round(
+                                sum(1 for r in fwd_rets if r > 0) / len(fwd_rets) * 100, 1
+                            ),
+                        }
+
+    # Max adverse excursion estimation
+    mae_estimates = []
+    if len(prices_1h) >= 48:
+        for i in range(24, len(prices_1h)):
+            window = prices_1h[i-24:i]
+            high = max(window)
+            low = min(window)
+            entry = window[0]
+            if entry > 0:
+                mae = ((low - entry) / entry) * 100
+                mae_estimates.append(round(mae, 2))
+
+    avg_mae = round(sum(mae_estimates) / len(mae_estimates), 2) if mae_estimates else -3.0
+    worst_mae = min(mae_estimates) if mae_estimates else -8.0
+
+    # Drawdown probability
+    if mae_estimates:
+        dd_gt_3pct = sum(1 for m in mae_estimates if m < -3)
+        dd_gt_5pct = sum(1 for m in mae_estimates if m < -5)
+        dd_gt_3pct_prob = round((dd_gt_3pct / len(mae_estimates)) * 100, 1)
+        dd_gt_5pct_prob = round((dd_gt_5pct / len(mae_estimates)) * 100, 1)
+    else:
+        dd_gt_3pct_prob = 30
+        dd_gt_5pct_prob = 15
+
+    return {
+        "coin": coin,
+        "target_regime": {
+            "macro": target_macro,
+            "trend": target_trend,
+            "execution": target_exec,
+        },
+        "sample_size": len(matching_periods),
+        "data_sufficient": len(matching_periods) >= 5,
+        "continuation": {
+            "avg_hours": round(avg_continuation, 1),
+            "max_hours": max_continuation,
+            "min_hours": min_continuation,
+            "prob_24h_pct": continuation_prob_24h,
+            "prob_72h_pct": continuation_prob_72h,
+        },
+        "forward_returns": forward_returns,
+        "max_adverse_excursion": {
+            "avg_pct": avg_mae,
+            "worst_pct": worst_mae,
+            "drawdown_gt_3pct_prob": dd_gt_3pct_prob,
+            "drawdown_gt_5pct_prob": dd_gt_5pct_prob,
+        },
+        "matching_periods": matching_periods[:20],
+        "current_price": current_price,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# BEHAVIORAL ALPHA ENGINE
+# ─────────────────────────────────────────
+
+def compute_behavioral_alpha_report(
+    email: str,
+    db: Session,
+    lookback_days: int = 30,
+) -> dict:
+    """
+    Analyzes user's exposure logs and performance entries
+    to identify specific behavioral leaks costing them money.
+    """
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=lookback_days)
+
+    logs = (
+        db.query(ExposureLog)
+        .filter(
+            ExposureLog.email == email,
+            ExposureLog.created_at >= cutoff,
+        )
+        .order_by(ExposureLog.created_at.asc())
+        .all()
+    )
+
+    entries = (
+        db.query(PerformanceEntry)
+        .filter(
+            PerformanceEntry.email == email,
+            PerformanceEntry.date >= cutoff,
+        )
+        .order_by(PerformanceEntry.date.asc())
+        .all()
+    )
+
+    if len(logs) < 3:
+        return {
+            "email": email,
+            "ready": False,
+            "message": f"Need at least 3 exposure logs. Currently have {len(logs)}.",
+            "log_count": len(logs),
+        }
+
+    # ── Leak Detection ──
+    leaks = {lt: {"count": 0, "instances": [], "estimated_drag": 0} for lt in LEAK_TYPES}
+
+    # Track log frequency for overtrading detection
+    log_times = [l.created_at for l in logs]
+    log_gaps_hours = []
+    for i in range(1, len(log_times)):
+        gap = (log_times[i] - log_times[i-1]).total_seconds() / 3600
+        log_gaps_hours.append(gap)
+
+    avg_log_gap = sum(log_gaps_hours) / len(log_gaps_hours) if log_gaps_hours else 24
+
+    if avg_log_gap < 4 and len(logs) > 10:
+        leaks["overtrading"]["count"] = len(logs)
+        leaks["overtrading"]["estimated_drag"] = round(len(logs) * 0.15, 1)
+        leaks["overtrading"]["instances"].append({
+            "detail": f"Avg {round(avg_log_gap, 1)}h between changes. {len(logs)} adjustments in {lookback_days}d.",
+            "period": f"Last {lookback_days} days",
+        })
+
+    for log in logs:
+        user_exp = log.user_exposure_pct or 0
+        model_exp = log.model_exposure_pct or 50
+        delta = user_exp - model_exp
+        hazard = log.hazard_at_log or 0
+        shift_risk = log.shift_risk_at_log or 0
+        regime = log.regime_label or "Neutral"
+
+        # Late Entry / Chasing
+        if delta > 15 and hazard > 50:
+            leaks["late_entry_chasing"]["count"] += 1
+            leaks["late_entry_chasing"]["estimated_drag"] += round(delta * 0.08, 2)
+            leaks["late_entry_chasing"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "delta": round(delta, 1),
+                "hazard": hazard,
+                "regime": regime,
+            })
+
+        # Over-exposed in Risk-Off
+        if "Risk-Off" in regime and user_exp > model_exp + 15:
+            leaks["overexposed_risk_off"]["count"] += 1
+            leaks["overexposed_risk_off"]["estimated_drag"] += round(delta * 0.12, 2)
+            leaks["overexposed_risk_off"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "user_exp": user_exp,
+                "model_exp": model_exp,
+                "regime": regime,
+            })
+
+        # Ignored Hazard Spike
+        if hazard > 65 and delta > 10:
+            leaks["ignored_hazard_spike"]["count"] += 1
+            leaks["ignored_hazard_spike"]["estimated_drag"] += round(hazard * 0.05, 2)
+            leaks["ignored_hazard_spike"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "hazard": hazard,
+                "delta": round(delta, 1),
+            })
+
+        # Premature Exit in Strength
+        if "Risk-On" in regime and "Strong" in regime and delta < -15 and hazard < 40:
+            leaks["premature_exit_strength"]["count"] += 1
+            leaks["premature_exit_strength"]["estimated_drag"] += round(abs(delta) * 0.06, 2)
+            leaks["premature_exit_strength"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "delta": round(delta, 1),
+                "regime": regime,
+            })
+
+        # Averaging Down in Risk-Off
+        if "Risk-Off" in regime and delta > 20:
+            prev_logs = [
+                pl for pl in logs
+                if pl.created_at < log.created_at
+                and (log.created_at - pl.created_at).total_seconds() < 86400
+            ]
+            if prev_logs:
+                prev_delta = prev_logs[-1].user_exposure_pct - prev_logs[-1].model_exposure_pct
+                if delta > prev_delta + 5:
+                    leaks["averaging_down_risk_off"]["count"] += 1
+                    leaks["averaging_down_risk_off"]["estimated_drag"] += round(delta * 0.15, 2)
+                    leaks["averaging_down_risk_off"]["instances"].append({
+                        "date": log.created_at.strftime("%b %d"),
+                        "delta": round(delta, 1),
+                        "regime": regime,
+                    })
+
+        # Size Too Large
+        if abs(delta) > 25:
+            leaks["size_too_large"]["count"] += 1
+            leaks["size_too_large"]["estimated_drag"] += round(abs(delta) * 0.04, 2)
+            leaks["size_too_large"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "delta": round(delta, 1),
+                "regime": regime,
+            })
+
+        # Failed to Press Edge (need performance data)
+        if "Strong Risk-On" in regime and delta < -10 and hazard < 30:
+            leaks["failed_to_press_edge"]["count"] += 1
+            leaks["failed_to_press_edge"]["estimated_drag"] += round(abs(delta) * 0.05, 2)
+            leaks["failed_to_press_edge"]["instances"].append({
+                "date": log.created_at.strftime("%b %d"),
+                "delta": round(delta, 1),
+                "regime": regime,
+                "hazard": hazard,
+            })
+
+    # ── Build Report ──
+    active_leaks = []
+    total_drag = 0
+
+    for leak_type, data in leaks.items():
+        if data["count"] > 0:
+            config = LEAK_TYPES[leak_type]
+            weighted_drag = round(data["estimated_drag"] * config["severity_weight"], 1)
+            total_drag += weighted_drag
+            active_leaks.append({
+                "type": leak_type,
+                "label": config["label"],
+                "description": config["description"],
+                "frequency": data["count"],
+                "estimated_alpha_drag_pct": weighted_drag,
+                "severity_weight": config["severity_weight"],
+                "instances": data["instances"][:5],
+            })
+
+    active_leaks.sort(key=lambda x: x["estimated_alpha_drag_pct"], reverse=True)
+
+    # ── Strengths ──
+    strengths = []
+    followed_count = sum(1 for l in logs if l.followed_model)
+    follow_rate = (followed_count / len(logs)) * 100 if logs else 0
+
+    if follow_rate > 70:
+        strengths.append(f"Strong model adherence ({round(follow_rate)}% follow rate)")
+
+    risk_off_logs = [l for l in logs if "Risk-Off" in (l.regime_label or "")]
+    if risk_off_logs:
+        risk_off_followed = sum(1 for l in risk_off_logs if l.followed_model)
+        risk_off_rate = (risk_off_followed / len(risk_off_logs)) * 100
+        if risk_off_rate > 60:
+            strengths.append(f"Good defensive discipline ({round(risk_off_rate)}% in Risk-Off)")
+
+    hazard_spike_logs = [l for l in logs if (l.hazard_at_log or 0) > 60]
+    if hazard_spike_logs:
+        reduced = sum(1 for l in hazard_spike_logs if (l.user_exposure_pct or 0) < (l.model_exposure_pct or 50))
+        if reduced > len(hazard_spike_logs) * 0.5:
+            strengths.append("Responds well to hazard spikes")
+
+    # ── Recommendations ──
+    recommendations = []
+    for leak in active_leaks[:3]:
+        if leak["type"] == "late_entry_chasing":
+            recommendations.append(
+                "Use the Setup Quality score to avoid chasing. "
+                "Wait for chase risk < 50 before entering."
+            )
+        elif leak["type"] == "overexposed_risk_off":
+            recommendations.append(
+                "Set a hard rule: max exposure = model recommendation in Risk-Off. "
+                "Use the Decision Engine directive."
+            )
+        elif leak["type"] == "ignored_hazard_spike":
+            recommendations.append(
+                "Enable hazard alerts. When hazard > 65, reduce exposure "
+                "within 1 hour regardless of conviction."
+            )
+        elif leak["type"] == "overtrading":
+            recommendations.append(
+                "Limit exposure changes to once per regime shift. "
+                "Check the regime stack before adjusting."
+            )
+        elif leak["type"] == "size_too_large":
+            recommendations.append(
+                "Use the Portfolio Allocator to right-size positions. "
+                "Stay within the exposure band."
+            )
+        elif leak["type"] == "averaging_down_risk_off":
+            recommendations.append(
+                "Never add to positions in Risk-Off. "
+                "The Playbook explicitly warns against this."
+            )
+        elif leak["type"] == "failed_to_press_edge":
+            recommendations.append(
+                "In Strong Risk-On with low hazard, trust the model. "
+                "Scale to full recommended exposure."
+            )
+        elif leak["type"] == "premature_exit_strength":
+            recommendations.append(
+                "In strong regimes with low hazard, hold longer. "
+                "Use survival probability to gauge regime health."
+            )
+
+    # ── Overall Score ──
+    if total_drag <= 2:
+        behavior_grade = "A"
+        behavior_label = "Excellent"
+    elif total_drag <= 5:
+        behavior_grade = "B+"
+        behavior_label = "Good"
+    elif total_drag <= 10:
+        behavior_grade = "B"
+        behavior_label = "Above Average"
+    elif total_drag <= 20:
+        behavior_grade = "C"
+        behavior_label = "Needs Improvement"
+    else:
+        behavior_grade = "D"
+        behavior_label = "Significant Leaks"
+
+    return {
+        "email": email,
+        "ready": True,
+        "lookback_days": lookback_days,
+        "log_count": len(logs),
+        "performance_count": len(entries),
+        "behavior_grade": behavior_grade,
+        "behavior_label": behavior_label,
+        "total_estimated_alpha_drag_pct": round(total_drag, 1),
+        "leaks": active_leaks,
+        "strengths": strengths,
+        "recommendations": recommendations,
+        "follow_rate": round(follow_rate, 1),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# PROBABILISTIC SCENARIOS ENGINE
+# ─────────────────────────────────────────
+
+def compute_scenarios(coin: str, db: Session) -> dict:
+    """
+    Generates base / bull / bear case probabilistic scenarios
+    based on current regime, hazard, survival, transitions.
+    """
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"coin": coin, "error": "Insufficient data"}
+
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+
+    hazard = stack.get("hazard") or 50
+    survival = stack.get("survival") or 50
+    shift_risk = stack.get("shift_risk") or 50
+    alignment = stack.get("alignment") or 50
+    exposure = stack.get("exposure") or 50
+    direction = stack.get("direction") or "mixed"
+
+    # Get transition probabilities
+    transitions = regime_transition_matrix(db, coin, "1h")
+    transition_probs = {}
+    if transitions and transitions.get("data_sufficient"):
+        transition_probs = transitions.get("transitions", {})
+
+    # Get setup quality
+    setup = compute_setup_quality(coin, db)
+    setup_score = setup.get("setup_quality_score") or 50
+    exhaustion = setup.get("trend_exhaustion") or 50
+
+    regime_num = REGIME_NUMERIC.get(exec_label, 0)
+
+    # ── Base Case ──
+    base_prob = round(min(75, max(25,
+        survival * 0.40 +
+        (100 - hazard) * 0.30 +
+        alignment * 0.15 +
+        (100 - shift_risk) * 0.15
+    )), 0)
+
+    if regime_num > 0:
+        base_outcome = "Regime continuation — trend maintains current direction"
+        base_exposure = f"Maintain {int(exposure * 0.9)}-{int(min(95, exposure * 1.1))}%"
+        base_actions = [
+            "Hold existing positions",
+            "Trail stops to recent support",
+            "Monitor hazard for acceleration",
+        ]
+    elif regime_num < 0:
+        base_outcome = "Risk-Off continuation — defensive positioning maintained"
+        base_exposure = f"Maintain {int(max(5, exposure * 0.8))}-{int(exposure * 1.1)}%"
+        base_actions = [
+            "Stay defensive — hold cash",
+            "No new long entries",
+            "Monitor for capitulation signals",
+        ]
+    else:
+        base_outcome = "Range-bound continuation — neutral positioning"
+        base_exposure = f"Maintain {int(max(5, exposure * 0.85))}-{int(min(95, exposure * 1.15))}%"
+        base_actions = [
+            "Reduce position sizes",
+            "Wait for directional clarity",
+            "Monitor regime stack for shifts",
+        ]
+
+    # ── Bull Case ──
+    if regime_num >= 0:
+        bull_prob = round(min(45, max(5,
+            (100 - hazard) * 0.25 +
+            alignment * 0.20 +
+            setup_score * 0.20 +
+            (100 - exhaustion) * 0.20 +
+            survival * 0.15
+        )), 0)
+        bull_outcome = "Breakout to higher — regime upgrades to stronger risk-on"
+        bull_exposure = f"Increase to {int(min(95, exposure * 1.3))}-{int(min(95, exposure * 1.5))}%"
+        bull_invalidation = "1h regime downgrades or hazard > 70%"
+        bull_actions = [
+            "Add on breakout confirmation",
+            "Pyramiding valid",
+            "Extend targets",
+        ]
+    else:
+        bull_prob = round(min(35, max(5,
+            hazard * 0.30 +
+            exhaustion * 0.25 +
+            (100 - survival) * 0.25 +
+            shift_risk * 0.20
+        )), 0)
+        bull_outcome = "Relief bounce — regime stabilizes and shifts toward Neutral"
+        bull_exposure = f"Cautiously increase to {int(min(60, exposure * 1.5))}-{int(min(70, exposure * 2.0))}%"
+        bull_invalidation = "New momentum lows or hazard re-acceleration"
+        bull_actions = [
+            "Only add if regime shifts to Neutral on all timeframes",
+            "Small sizes — countertrend",
+            "Tight stops",
+        ]
+
+    # ── Bear Case ──
+    if regime_num <= 0:
+        bear_prob = round(min(45, max(5,
+            hazard * 0.30 +
+            shift_risk * 0.25 +
+            (100 - alignment) * 0.20 +
+            (100 - survival) * 0.25
+        )), 0)
+        bear_outcome = "Accelerated sell-off — regime deteriorates further"
+        bear_exposure = f"Reduce to {int(max(0, exposure * 0.3))}-{int(max(5, exposure * 0.5))}%"
+        bear_invalidation = "Strong reversal with volume and 4h regime upgrade"
+        bear_actions = [
+            "Exit remaining positions",
+            "Move to full cash / stables",
+            "Do not attempt to catch bottom",
+        ]
+    else:
+        bear_prob = round(min(40, max(5,
+            hazard * 0.30 +
+            exhaustion * 0.25 +
+            shift_risk * 0.25 +
+            (100 - alignment) * 0.20
+        )), 0)
+        bear_outcome = "Regime failure — trend breaks and shifts to Risk-Off"
+        bear_exposure = f"Reduce to {int(max(5, exposure * 0.4))}-{int(max(10, exposure * 0.6))}%"
+        bear_invalidation = "Structural break of 4h trend support"
+        bear_actions = [
+            "Reduce exposure immediately",
+            "No new longs until regime stabilizes",
+            "Move stops to breakeven on remaining positions",
+        ]
+
+    # Normalize probabilities
+    total = base_prob + bull_prob + bear_prob
+    if total > 0:
+        base_prob = round((base_prob / total) * 100, 0)
+        bull_prob = round((bull_prob / total) * 100, 0)
+        bear_prob = 100 - base_prob - bull_prob
+
+    scenarios = [
+        {
+            "name": "Base Case",
+            "probability": int(base_prob),
+            "outcome": base_outcome,
+            "exposure": base_exposure,
+            "actions": base_actions,
+            "invalidation": f"Hazard exceeds {int(min(100, hazard + 25))}% or regime shifts",
+            },
+        {
+            "name": "Bull Case",
+            "probability": int(bull_prob),
+            "outcome": bull_outcome,
+            "exposure": bull_exposure,
+            "actions": bull_actions,
+            "invalidation": bull_invalidation,
+        },
+        {
+            "name": "Bear Case",
+            "probability": int(bear_prob),
+            "outcome": bear_outcome,
+            "exposure": bear_exposure,
+            "actions": bear_actions,
+            "invalidation": bear_invalidation,
+        },
+    ]
+
+    # ── What Invalidates Base Case ──
+    invalidation_triggers = []
+    if hazard > 50:
+        invalidation_triggers.append(f"Hazard at {hazard}% — approaching instability")
+    if shift_risk > 55:
+        invalidation_triggers.append(f"Shift risk at {shift_risk}% — transition pressure building")
+    if exhaustion > 65:
+        invalidation_triggers.append(f"Trend exhaustion at {exhaustion}% — momentum fading")
+    if alignment < 40:
+        invalidation_triggers.append(f"Alignment only {alignment}% — timeframes diverging")
+
+    # ── Expected Path ──
+    if regime_num > 0 and hazard < 50:
+        expected_path_24h = "Continuation higher with possible shallow pullback"
+        expected_path_7d = "Trend intact if hazard stays below 60%"
+    elif regime_num > 0 and hazard >= 50:
+        expected_path_24h = "Possible consolidation or pullback as hazard elevates"
+        expected_path_7d = "Watch for regime transition — survival declining"
+    elif regime_num < 0 and hazard < 50:
+        expected_path_24h = "Continued weakness — bounces likely sold"
+        expected_path_7d = "Risk-Off persists until capitulation signals appear"
+    elif regime_num < 0 and hazard >= 50:
+        expected_path_24h = "Possible stabilization attempt — but premature to buy"
+        expected_path_7d = "Risk-Off regime may be exhausting — watch for Neutral shift"
+    else:
+        expected_path_24h = "Range-bound — no clear directional signal"
+        expected_path_7d = "Wait for regime stack alignment before committing"
+
+    return {
+        "coin": coin,
+        "scenarios": scenarios,
+        "current_regime": exec_label,
+        "direction": direction,
+        "invalidation_triggers": invalidation_triggers,
+        "expected_path": {
+            "24h": expected_path_24h,
+            "7d": expected_path_7d,
+        },
+        "context": {
+            "hazard": hazard,
+            "survival": survival,
+            "shift_risk": shift_risk,
+            "alignment": alignment,
+            "exhaustion": exhaustion,
+            "setup_score": setup_score,
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# INTERNAL DAMAGE MONITOR
+# ─────────────────────────────────────────
+
+def compute_internal_damage(coin: str, db: Session) -> dict:
+    """
+    Detects internal structural weakening that often precedes
+    visible regime shifts. Looks at breadth deterioration,
+    momentum divergence, coherence rollover, volatility expansion.
+    """
+    # Get recent history
+    records_1h = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1h",
+        )
+        .order_by(MarketSummary.created_at.desc())
+        .limit(24)
+        .all()
+    )
+    records_1h.reverse()
+
+    records_4h = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "4h",
+        )
+        .order_by(MarketSummary.created_at.desc())
+        .limit(12)
+        .all()
+    )
+    records_4h.reverse()
+
+    records_1d = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1d",
+        )
+        .order_by(MarketSummary.created_at.desc())
+        .limit(7)
+        .all()
+    )
+    records_1d.reverse()
+
+    if len(records_1h) < 6:
+        return {
+            "coin": coin,
+            "internal_damage_score": None,
+            "error": "Insufficient history for damage analysis",
+        }
+
+    signals = []
+    damage_components = {}
+
+    # ── 1. Coherence Rollover ──
+    if len(records_1h) >= 6:
+        recent_coherence = [r.coherence for r in records_1h[-6:] if r.coherence is not None]
+        if len(recent_coherence) >= 4:
+            declining = all(
+                recent_coherence[i] <= recent_coherence[i - 1]
+                for i in range(1, len(recent_coherence))
+            )
+            avg_recent = sum(recent_coherence[-3:]) / 3
+            avg_prior = sum(recent_coherence[:3]) / 3
+
+            coherence_decline = round(avg_prior - avg_recent, 1)
+            damage_components["coherence_rollover"] = min(100, max(0, coherence_decline * 5))
+
+            if declining and coherence_decline > 5:
+                signals.append({
+                    "type": "coherence_rollover",
+                    "severity": "high" if coherence_decline > 15 else "medium",
+                    "message": f"Coherence declined {coherence_decline} pts over last 6 updates",
+                    "value": coherence_decline,
+                })
+            elif coherence_decline > 3:
+                signals.append({
+                    "type": "coherence_weakening",
+                    "severity": "low",
+                    "message": f"Coherence weakening by {coherence_decline} pts",
+                    "value": coherence_decline,
+                })
+        else:
+            damage_components["coherence_rollover"] = 0
+    else:
+        damage_components["coherence_rollover"] = 0
+
+    # ── 2. Momentum Divergence ──
+    if len(records_1h) >= 6:
+        recent_scores = [r.score for r in records_1h[-6:]]
+        prices_1h, _ = get_klines(coin, "1h", limit=12)
+
+        if len(prices_1h) >= 6 and len(recent_scores) >= 6:
+            price_direction = prices_1h[-1] - prices_1h[-6]
+            score_direction = recent_scores[-1] - recent_scores[-6]
+
+            # Divergence: price up but score down, or vice versa
+            if price_direction > 0 and score_direction < -3:
+                div_strength = abs(score_direction)
+                damage_components["momentum_divergence"] = min(100, div_strength * 5)
+                signals.append({
+                    "type": "bearish_divergence",
+                    "severity": "high" if div_strength > 10 else "medium",
+                    "message": f"Price rising but regime score declining ({round(score_direction, 1)} pts)",
+                    "value": round(score_direction, 1),
+                })
+            elif price_direction < 0 and score_direction > 3:
+                div_strength = abs(score_direction)
+                damage_components["momentum_divergence"] = min(100, div_strength * 3)
+                signals.append({
+                    "type": "bullish_divergence",
+                    "severity": "medium",
+                    "message": f"Price falling but regime score improving (+{round(score_direction, 1)} pts)",
+                    "value": round(score_direction, 1),
+                })
+            else:
+                damage_components["momentum_divergence"] = 0
+        else:
+            damage_components["momentum_divergence"] = 0
+    else:
+        damage_components["momentum_divergence"] = 0
+
+    # ── 3. Timeframe Divergence ──
+    stack = build_regime_stack(coin, db)
+    if not stack["incomplete"]:
+        exec_num = REGIME_NUMERIC.get(
+            stack["execution"]["label"] if stack.get("execution") else "Neutral", 0
+        )
+        trend_num = REGIME_NUMERIC.get(
+            stack["trend"]["label"] if stack.get("trend") else "Neutral", 0
+        )
+        macro_num = REGIME_NUMERIC.get(
+            stack["macro"]["label"] if stack.get("macro") else "Neutral", 0
+        )
+
+        # Check for disagreement
+        tf_spread = max(exec_num, trend_num, macro_num) - min(exec_num, trend_num, macro_num)
+        damage_components["timeframe_divergence"] = min(100, tf_spread * 25)
+
+        if tf_spread >= 3:
+            signals.append({
+                "type": "timeframe_conflict",
+                "severity": "high",
+                "message": "Major timeframe disagreement — macro and execution regimes conflict",
+                "value": tf_spread,
+            })
+        elif tf_spread >= 2:
+            signals.append({
+                "type": "timeframe_tension",
+                "severity": "medium",
+                "message": "Timeframe tension — trend and execution regimes misaligned",
+                "value": tf_spread,
+            })
+    else:
+        damage_components["timeframe_divergence"] = 0
+
+    # ── 4. Volatility Expansion Against Trend ──
+    if len(records_1h) >= 8:
+        recent_vol = [r.volatility_val for r in records_1h[-4:] if r.volatility_val]
+        prior_vol = [r.volatility_val for r in records_1h[-8:-4] if r.volatility_val]
+
+        if recent_vol and prior_vol:
+            avg_recent_vol = sum(recent_vol) / len(recent_vol)
+            avg_prior_vol = sum(prior_vol) / len(prior_vol)
+
+            if avg_prior_vol > 0:
+                vol_expansion = ((avg_recent_vol - avg_prior_vol) / avg_prior_vol) * 100
+            else:
+                vol_expansion = 0
+
+            damage_components["volatility_expansion"] = min(100, max(0, vol_expansion * 2))
+
+            if vol_expansion > 30:
+                signals.append({
+                    "type": "volatility_expansion",
+                    "severity": "high" if vol_expansion > 60 else "medium",
+                    "message": f"Volatility expanding {round(vol_expansion, 1)}% — instability rising",
+                    "value": round(vol_expansion, 1),
+                })
+        else:
+            damage_components["volatility_expansion"] = 0
+    else:
+        damage_components["volatility_expansion"] = 0
+
+    # ── 5. Score Trajectory ──
+    if len(records_1h) >= 8:
+        scores_recent = [r.score for r in records_1h[-4:]]
+        scores_prior = [r.score for r in records_1h[-8:-4]]
+
+        avg_recent_score = sum(scores_recent) / len(scores_recent)
+        avg_prior_score = sum(scores_prior) / len(scores_prior)
+        score_drift = avg_recent_score - avg_prior_score
+
+        # If regime is bullish but score is drifting down
+        current_label = records_1h[-1].label if records_1h else "Neutral"
+        current_num = REGIME_NUMERIC.get(current_label, 0)
+
+        if current_num > 0 and score_drift < -3:
+            damage_components["score_deterioration"] = min(100, abs(score_drift) * 5)
+            signals.append({
+                "type": "score_deterioration",
+                "severity": "medium" if abs(score_drift) > 8 else "low",
+                "message": f"Regime score drifting lower ({round(score_drift, 1)} pts) within bullish regime",
+                "value": round(score_drift, 1),
+            })
+        elif current_num < 0 and score_drift > 3:
+            damage_components["score_deterioration"] = min(100, abs(score_drift) * 3)
+            signals.append({
+                "type": "score_improvement",
+                "severity": "low",
+                "message": f"Score improving within Risk-Off ({round(score_drift, 1)} pts) — watch for regime shift",
+                "value": round(score_drift, 1),
+            })
+        else:
+            damage_components["score_deterioration"] = 0
+    else:
+        damage_components["score_deterioration"] = 0
+
+    # ── Composite Internal Damage Score ──
+    weights = {
+        "coherence_rollover": 0.25,
+        "momentum_divergence": 0.25,
+        "timeframe_divergence": 0.20,
+        "volatility_expansion": 0.15,
+        "score_deterioration": 0.15,
+    }
+
+    damage_score = 0
+    for component, weight in weights.items():
+        damage_score += damage_components.get(component, 0) * weight
+
+    damage_score = round(min(100, max(0, damage_score)), 1)
+
+    # ── Label ──
+    if damage_score >= 70:
+        damage_label = "Severe"
+        damage_message = "Internal structure heavily damaged. Regime likely to shift soon."
+    elif damage_score >= 50:
+        damage_label = "Moderate"
+        damage_message = "Internal weakening detected. Reduce new risk. Tighten stops."
+    elif damage_score >= 30:
+        damage_label = "Mild"
+        damage_message = "Minor internal stress. Monitor but no immediate action required."
+    else:
+        damage_label = "Healthy"
+        damage_message = "Internal structure intact. Trend supported by internals."
+
+    return {
+        "coin": coin,
+        "internal_damage_score": damage_score,
+        "damage_label": damage_label,
+        "damage_message": damage_message,
+        "signals": sorted(signals, key=lambda x: {"high": 0, "medium": 1, "low": 2}.get(x["severity"], 3)),
+        "components": damage_components,
+        "signal_count": len(signals),
+        "high_severity_count": sum(1 for s in signals if s["severity"] == "high"),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+# ─────────────────────────────────────────
+# TRADE PLANNING ENGINE
+# ─────────────────────────────────────────
+
+def compute_trade_plan(
+    coin: str,
+    account_size: float,
+    strategy_mode: str,
+    db: Session,
+    email: str = None,
+) -> dict:
+    """
+    Generates a complete trade plan based on current regime,
+    setup quality, risk parameters, and user profile.
+    """
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"coin": coin, "error": "Insufficient regime data"}
+
+    setup = compute_setup_quality(coin, db)
+    setup_score = setup.get("setup_quality_score") or 50
+    entry_mode = setup.get("entry_mode") or "Wait"
+    chase_risk = setup.get("chase_risk") or 50
+    current_price = setup.get("current_price") or 0
+    atr_1h = setup.get("atr_1h") or 0
+
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+    exposure = stack.get("exposure") or 50
+    hazard = stack.get("hazard") or 50
+    shift_risk = stack.get("shift_risk") or 50
+    survival = stack.get("survival") or 50
+
+    regime_num = REGIME_NUMERIC.get(exec_label, 0)
+
+    # ── User Profile Adjustments ──
+    risk_mult = 1.0
+    archetype_config = ARCHETYPE_CONFIG.get(strategy_mode, ARCHETYPE_CONFIG["swing"])
+
+    if email:
+        profile = db.query(UserProfile).filter(UserProfile.email == email).first()
+        if profile:
+            risk_mult = profile.risk_multiplier or 1.0
+
+    adjusted_exposure = round(min(95, max(5, exposure * risk_mult * archetype_config["exposure_mult"])), 1)
+
+    # ── Bias ──
+    if regime_num >= 1:
+        bias = "Long"
+    elif regime_num <= -1:
+        bias = "Short / Cash"
+    else:
+        bias = "Neutral / Reduced"
+
+    # ── Allocation Band ──
+    band_low = round(max(5, adjusted_exposure * 0.75), 0)
+    band_high = round(min(95, adjusted_exposure * 1.25), 0)
+    allocation_band = f"{int(band_low)}-{int(band_high)}%"
+
+    # ── Entry Style ──
+    if chase_risk > 70:
+        entry_style = "Wait for Pullback"
+    elif setup_score > 65 and regime_num > 0:
+        entry_style = "Pullback — Scale In"
+    elif setup_score > 75 and setup.get("range_position", 0) > 85:
+        entry_style = "Breakout"
+    elif regime_num < 0:
+        entry_style = "No Long Entry"
+    else:
+        entry_style = "Wait for Setup Quality > 60"
+
+    # ── Tranches ──
+    tranches = archetype_config["typical_tranches"]
+    deployed_capital = round(account_size * adjusted_exposure / 100, 2)
+    tranche_amounts = [round(deployed_capital * (t / 100), 2) for t in tranches]
+
+    # ── Stop Location ──
+    stop_mult = archetype_config["stop_width_mult"]
+    if atr_1h > 0 and current_price > 0:
+        if regime_num >= 0:
+            stop_price = round(current_price - atr_1h * 2.5 * stop_mult, 2)
+            stop_pct = round(((current_price - stop_price) / current_price) * 100, 2)
+        else:
+            stop_price = round(current_price + atr_1h * 2.5 * stop_mult, 2)
+            stop_pct = round(((stop_price - current_price) / current_price) * 100, 2)
+    else:
+        stop_price = 0
+        stop_pct = 3.0
+
+    # ── Invalidation Logic ──
+    invalidation_conditions = []
+    if regime_num > 0:
+        invalidation_conditions.append(f"Execution regime shifts to Risk-Off")
+        invalidation_conditions.append(f"Hazard rate exceeds {int(min(100, hazard + 30))}%")
+        invalidation_conditions.append(f"Price breaks below {stop_price}")
+        invalidation_conditions.append(f"4h trend regime downgrades")
+    elif regime_num < 0:
+        invalidation_conditions.append(f"Execution regime shifts to Risk-On")
+        invalidation_conditions.append(f"Price breaks above {round(current_price + atr_1h * 3, 2) if atr_1h else 'resistance'}")
+    else:
+        invalidation_conditions.append(f"Regime stack aligns directionally")
+        invalidation_conditions.append(f"Hazard rate exceeds 70%")
+
+    # ── Profit Taking Rules ──
+    profit_rules = []
+    if regime_num > 0:
+        if atr_1h > 0:
+            tp1 = round(current_price + atr_1h * 2.0, 2)
+            tp2 = round(current_price + atr_1h * 4.0, 2)
+            tp3 = round(current_price + atr_1h * 6.0, 2)
+            profit_rules.append(f"Trim 25% at {tp1} (+{round(atr_1h * 2, 2)})")
+            profit_rules.append(f"Trim 25% at {tp2} (+{round(atr_1h * 4, 2)})")
+            profit_rules.append(f"Trail remaining with stop at {round(current_price + atr_1h * 1.0, 2)}")
+        else:
+            profit_rules.append("Trim 25% on first extension")
+            profit_rules.append("Trim 25% on second extension")
+            profit_rules.append("Trail remaining under 4h trend support")
+    elif regime_num < 0:
+        profit_rules.append("No long profit targets — defensive mode")
+        profit_rules.append("Cover shorts on oversold signal or regime upgrade")
+    else:
+        profit_rules.append("Take quick profits on any 2-3% move")
+        profit_rules.append("No holding through Neutral — reduce on strength")
+
+    # ── Conditional Actions ──
+    conditional = []
+    if regime_num > 0:
+        conditional.append({
+            "condition": "Price pulls back 2-3%",
+            "action": "Deploy next tranche",
+        })
+        conditional.append({
+            "condition": "Hazard exceeds 65%",
+            "action": "Tighten stops and reduce by 20%",
+        })
+        conditional.append({
+            "condition": "Regime shifts to Neutral",
+            "action": "Close 50% and trail remainder",
+        })
+        conditional.append({
+            "condition": "Shift risk exceeds 75%",
+            "action": "Reduce to minimum allocation",
+        })
+    elif regime_num < 0:
+        conditional.append({
+            "condition": "Regime upgrades to Neutral",
+            "action": "Scout small positions with tight stops",
+        })
+        conditional.append({
+            "condition": "Capitulation signals appear",
+            "action": "Begin deploying first tranche cautiously",
+        })
+    else:
+        conditional.append({
+            "condition": "Regime stack aligns bullish",
+            "action": "Deploy first two tranches",
+        })
+        conditional.append({
+            "condition": "Regime stack aligns bearish",
+            "action": "Move to full cash",
+        })
+
+    # ── Time Horizon ──
+    max_hold = archetype_config["max_hold_days"]
+    avg_regime_dur = average_regime_duration(db, coin, "1h")
+    estimated_hold = round(min(max_hold, avg_regime_dur / 24 * 1.5), 0)
+
+    # ── Risk Per Trade ──
+    risk_per_trade_pct = round(stop_pct * (adjusted_exposure / 100), 2)
+    risk_per_trade_usd = round(account_size * risk_per_trade_pct / 100, 2)
+
+    return {
+        "coin": coin,
+        "current_price": current_price,
+        "bias": bias,
+        "allocation_band": allocation_band,
+        "adjusted_exposure": adjusted_exposure,
+        "entry_style": entry_style,
+        "setup_quality": setup_score,
+        "chase_risk": chase_risk,
+        "tranches": {
+            "percentages": tranches,
+            "amounts": tranche_amounts,
+            "deployed_total": deployed_capital,
+        },
+        "stop": {
+            "price": stop_price,
+            "distance_pct": stop_pct,
+            "type": "ATR-based" if atr_1h > 0 else "Default",
+        },
+        "risk_per_trade": {
+            "pct_of_account": risk_per_trade_pct,
+            "usd": risk_per_trade_usd,
+        },
+        "invalidation": invalidation_conditions,
+        "profit_taking": profit_rules,
+        "conditional_actions": conditional,
+        "time_horizon_days": int(estimated_hold),
+        "max_hold_days": max_hold,
+        "regime_context": {
+            "execution": exec_label,
+            "trend": trend_label,
+            "macro": macro_label,
+            "hazard": hazard,
+            "shift_risk": shift_risk,
+            "survival": survival,
+        },
+        "archetype": archetype_config["label"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# TRADE PLANNING ENGINE
+# ─────────────────────────────────────────
+
+def compute_trade_plan(
+    coin: str,
+    account_size: float,
+    strategy_mode: str,
+    db: Session,
+    email: str = None,
+) -> dict:
+    """
+    Generates a complete trade plan based on current regime,
+    setup quality, risk parameters, and user profile.
+    """
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"coin": coin, "error": "Insufficient regime data"}
+
+    setup = compute_setup_quality(coin, db)
+    setup_score = setup.get("setup_quality_score") or 50
+    entry_mode = setup.get("entry_mode") or "Wait"
+    chase_risk = setup.get("chase_risk") or 50
+    current_price = setup.get("current_price") or 0
+    atr_1h = setup.get("atr_1h") or 0
+
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+    exposure = stack.get("exposure") or 50
+    hazard = stack.get("hazard") or 50
+    shift_risk = stack.get("shift_risk") or 50
+    survival = stack.get("survival") or 50
+
+    regime_num = REGIME_NUMERIC.get(exec_label, 0)
+
+    # ── User Profile Adjustments ──
+    risk_mult = 1.0
+    archetype_config = ARCHETYPE_CONFIG.get(strategy_mode, ARCHETYPE_CONFIG["swing"])
+
+    if email:
+        profile = db.query(UserProfile).filter(UserProfile.email == email).first()
+        if profile:
+            risk_mult = profile.risk_multiplier or 1.0
+
+    adjusted_exposure = round(min(95, max(5, exposure * risk_mult * archetype_config["exposure_mult"])), 1)
+
+    # ── Bias ──
+    if regime_num >= 1:
+        bias = "Long"
+    elif regime_num <= -1:
+        bias = "Short / Cash"
+    else:
+        bias = "Neutral / Reduced"
+
+    # ── Allocation Band ──
+    band_low = round(max(5, adjusted_exposure * 0.75), 0)
+    band_high = round(min(95, adjusted_exposure * 1.25), 0)
+    allocation_band = f"{int(band_low)}-{int(band_high)}%"
+
+    # ── Entry Style ──
+    if chase_risk > 70:
+        entry_style = "Wait for Pullback"
+    elif setup_score > 65 and regime_num > 0:
+        entry_style = "Pullback — Scale In"
+    elif setup_score > 75 and setup.get("range_position", 0) > 85:
+        entry_style = "Breakout"
+    elif regime_num < 0:
+        entry_style = "No Long Entry"
+    else:
+        entry_style = "Wait for Setup Quality > 60"
+
+    # ── Tranches ──
+    tranches = archetype_config["typical_tranches"]
+    deployed_capital = round(account_size * adjusted_exposure / 100, 2)
+    tranche_amounts = [round(deployed_capital * (t / 100), 2) for t in tranches]
+
+    # ── Stop Location ──
+    stop_mult = archetype_config["stop_width_mult"]
+    if atr_1h > 0 and current_price > 0:
+        if regime_num >= 0:
+            stop_price = round(current_price - atr_1h * 2.5 * stop_mult, 2)
+            stop_pct = round(((current_price - stop_price) / current_price) * 100, 2)
+        else:
+            stop_price = round(current_price + atr_1h * 2.5 * stop_mult, 2)
+            stop_pct = round(((stop_price - current_price) / current_price) * 100, 2)
+    else:
+        stop_price = 0
+        stop_pct = 3.0
+
+    # ── Invalidation Logic ──
+    invalidation_conditions = []
+    if regime_num > 0:
+        invalidation_conditions.append(f"Execution regime shifts to Risk-Off")
+        invalidation_conditions.append(f"Hazard rate exceeds {int(min(100, hazard + 30))}%")
+        invalidation_conditions.append(f"Price breaks below {stop_price}")
+        invalidation_conditions.append(f"4h trend regime downgrades")
+    elif regime_num < 0:
+        invalidation_conditions.append(f"Execution regime shifts to Risk-On")
+        invalidation_conditions.append(f"Price breaks above {round(current_price + atr_1h * 3, 2) if atr_1h else 'resistance'}")
+    else:
+        invalidation_conditions.append(f"Regime stack aligns directionally")
+        invalidation_conditions.append(f"Hazard rate exceeds 70%")
+
+    # ── Profit Taking Rules ──
+    profit_rules = []
+    if regime_num > 0:
+        if atr_1h > 0:
+            tp1 = round(current_price + atr_1h * 2.0, 2)
+            tp2 = round(current_price + atr_1h * 4.0, 2)
+            tp3 = round(current_price + atr_1h * 6.0, 2)
+            profit_rules.append(f"Trim 25% at {tp1} (+{round(atr_1h * 2, 2)})")
+            profit_rules.append(f"Trim 25% at {tp2} (+{round(atr_1h * 4, 2)})")
+            profit_rules.append(f"Trail remaining with stop at {round(current_price + atr_1h * 1.0, 2)}")
+        else:
+            profit_rules.append("Trim 25% on first extension")
+            profit_rules.append("Trim 25% on second extension")
+            profit_rules.append("Trail remaining under 4h trend support")
+    elif regime_num < 0:
+        profit_rules.append("No long profit targets — defensive mode")
+        profit_rules.append("Cover shorts on oversold signal or regime upgrade")
+    else:
+        profit_rules.append("Take quick profits on any 2-3% move")
+        profit_rules.append("No holding through Neutral — reduce on strength")
+
+    # ── Conditional Actions ──
+    conditional = []
+    if regime_num > 0:
+        conditional.append({
+            "condition": "Price pulls back 2-3%",
+            "action": "Deploy next tranche",
+        })
+        conditional.append({
+            "condition": "Hazard exceeds 65%",
+            "action": "Tighten stops and reduce by 20%",
+        })
+        conditional.append({
+            "condition": "Regime shifts to Neutral",
+            "action": "Close 50% and trail remainder",
+        })
+        conditional.append({
+            "condition": "Shift risk exceeds 75%",
+            "action": "Reduce to minimum allocation",
+        })
+    elif regime_num < 0:
+        conditional.append({
+            "condition": "Regime upgrades to Neutral",
+            "action": "Scout small positions with tight stops",
+        })
+        conditional.append({
+            "condition": "Capitulation signals appear",
+            "action": "Begin deploying first tranche cautiously",
+        })
+    else:
+        conditional.append({
+            "condition": "Regime stack aligns bullish",
+            "action": "Deploy first two tranches",
+        })
+        conditional.append({
+            "condition": "Regime stack aligns bearish",
+            "action": "Move to full cash",
+        })
+
+    # ── Time Horizon ──
+    max_hold = archetype_config["max_hold_days"]
+    avg_regime_dur = average_regime_duration(db, coin, "1h")
+    estimated_hold = round(min(max_hold, avg_regime_dur / 24 * 1.5), 0)
+
+    # ── Risk Per Trade ──
+    risk_per_trade_pct = round(stop_pct * (adjusted_exposure / 100), 2)
+    risk_per_trade_usd = round(account_size * risk_per_trade_pct / 100, 2)
+
+    return {
+        "coin": coin,
+        "current_price": current_price,
+        "bias": bias,
+        "allocation_band": allocation_band,
+        "adjusted_exposure": adjusted_exposure,
+        "entry_style": entry_style,
+        "setup_quality": setup_score,
+        "chase_risk": chase_risk,
+        "tranches": {
+            "percentages": tranches,
+            "amounts": tranche_amounts,
+            "deployed_total": deployed_capital,
+        },
+        "stop": {
+            "price": stop_price,
+            "distance_pct": stop_pct,
+            "type": "ATR-based" if atr_1h > 0 else "Default",
+        },
+        "risk_per_trade": {
+            "pct_of_account": risk_per_trade_pct,
+            "usd": risk_per_trade_usd,
+        },
+        "invalidation": invalidation_conditions,
+        "profit_taking": profit_rules,
+        "conditional_actions": conditional,
+        "time_horizon_days": int(estimated_hold),
+        "max_hold_days": max_hold,
+        "regime_context": {
+            "execution": exec_label,
+            "trend": trend_label,
+            "macro": macro_label,
+            "hazard": hazard,
+            "shift_risk": shift_risk,
+            "survival": survival,
+        },
+        "archetype": archetype_config["label"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# EVENT-AWARE RISK OVERLAY
+# ─────────────────────────────────────────
+
+def compute_event_risk_overlay(coin: str, db: Session) -> dict:
+    """
+    Computes risk adjustments based on upcoming macro events.
+    Uses typical volatility multipliers and regime survival impact
+    to recommend position size adjustments ahead of events.
+    """
+    stack = build_regime_stack(coin, db)
+    exposure = stack.get("exposure") or 50 if not stack.get("incomplete") else 50
+    hazard = stack.get("hazard") or 50 if not stack.get("incomplete") else 50
+
+    # Simulate upcoming events (in production, connect to calendar API)
+    # For now, rotate through events on a schedule
+    now = datetime.datetime.utcnow()
+    day_of_month = now.day
+    hour = now.hour
+
+    active_events = []
+    for i, event in enumerate(DYNAMIC_RISK_EVENTS):
+        # Simulate different events being "upcoming" based on date
+        # In production, replace with real calendar data
+        simulated_hours_until = ((i * 37 + day_of_month * 13) % 168) + 1
+        active_events.append({
+            **event,
+            "hours_until": simulated_hours_until,
+        })
+
+    # Sort by proximity
+    active_events.sort(key=lambda x: x["hours_until"])
+
+    # Find imminent events (within 48h)
+    imminent = [e for e in active_events if e["hours_until"] <= 48]
+    upcoming = [e for e in active_events if 48 < e["hours_until"] <= 168]
+
+    # Compute aggregate risk multiplier
+    if imminent:
+        # Use highest impact event
+        max_vol_mult = max(e["typical_vol_multiplier"] for e in imminent)
+        max_survival_impact = min(e["regime_survival_impact"] for e in imminent)
+    else:
+        max_vol_mult = 1.0
+        max_survival_impact = 0
+
+    event_risk_multiplier = round(max_vol_mult, 2)
+
+    # Adjusted exposure recommendation
+    if event_risk_multiplier > 1.5:
+        exposure_adjustment = -20
+        adjustment_label = "Significant Reduction"
+        adjustment_message = "High-impact event imminent. Reduce new risk by 20%."
+    elif event_risk_multiplier > 1.2:
+        exposure_adjustment = -10
+        adjustment_label = "Moderate Reduction"
+        adjustment_message = "Medium-impact event approaching. Reduce new risk by 10%."
+    else:
+        exposure_adjustment = 0
+        adjustment_label = "No Adjustment"
+        adjustment_message = "No imminent high-impact events."
+
+    adjusted_exposure = round(max(5, min(95, exposure + exposure_adjustment)), 1)
+
+    # Survival impact
+    survival_current = stack.get("survival") or 50 if not stack.get("incomplete") else 50
+    survival_adjusted = round(max(0, survival_current + max_survival_impact), 1)
+
+    # Event-specific guidance
+    event_guidance = []
+    for e in imminent[:3]:
+        if e["impact"] == "High":
+            event_guidance.append({
+                "event": e["name"],
+                "hours_until": e["hours_until"],
+                "action": f"Reduce position size by 15-25% ahead of {e['name']}",
+                "volatility_multiplier": e["typical_vol_multiplier"],
+                "stop_guidance": "Widen stops by 50% or reduce size equivalent",
+            })
+        elif e["impact"] == "Medium":
+            event_guidance.append({
+                "event": e["name"],
+                "hours_until": e["hours_until"],
+                "action": f"Consider tightening stops ahead of {e['name']}",
+                "volatility_multiplier": e["typical_vol_multiplier"],
+                "stop_guidance": "Widen stops by 25% or reduce size slightly",
+            })
+
+    return {
+        "coin": coin,
+        "event_risk_multiplier": event_risk_multiplier,
+        "exposure_before_event": exposure,
+        "exposure_adjusted": adjusted_exposure,
+        "exposure_adjustment": exposure_adjustment,
+        "adjustment_label": adjustment_label,
+        "adjustment_message": adjustment_message,
+        "survival_current": survival_current,
+        "survival_adjusted": survival_adjusted,
+        "imminent_events": [
+            {
+                "name": e["name"],
+                "type": e["type"],
+                "impact": e["impact"],
+                "hours_until": e["hours_until"],
+                "vol_multiplier": e["typical_vol_multiplier"],
+            }
+            for e in imminent[:5]
+        ],
+        "upcoming_events": [
+            {
+                "name": e["name"],
+                "type": e["type"],
+                "impact": e["impact"],
+                "hours_until": e["hours_until"],
+            }
+            for e in upcoming[:5]
+        ],
+        "event_guidance": event_guidance,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# TRADER ARCHETYPE PERSONALIZATION
+# ─────────────────────────────────────────
+
+def apply_archetype_overlay(
+    coin: str,
+    archetype: str,
+    db: Session,
+    email: str = None,
+) -> dict:
+    """
+    Takes the base regime data and personalizes it
+    for the user's trader archetype.
+    """
+    config = ARCHETYPE_CONFIG.get(archetype, ARCHETYPE_CONFIG["swing"])
+    stack = build_regime_stack(coin, db)
+
+    if stack["incomplete"]:
+        return {"coin": coin, "error": "Insufficient data", "archetype": archetype}
+
+    base_exposure = stack.get("exposure") or 50
+    hazard = stack.get("hazard") or 50
+    shift_risk = stack.get("shift_risk") or 50
+    survival = stack.get("survival") or 50
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+
+    # Adjust exposure
+    adjusted_exposure = round(min(95, max(5, base_exposure * config["exposure_mult"])), 1)
+
+    # Adjust alert sensitivity
+    if config["alert_sensitivity"] == "high":
+        alert_shift_risk_threshold = 55
+        alert_hazard_threshold = 50
+    elif config["alert_sensitivity"] == "low":
+        alert_shift_risk_threshold = 80
+        alert_hazard_threshold = 70
+    else:
+        alert_shift_risk_threshold = 70
+        alert_hazard_threshold = 60
+
+    # Should alert now?
+    should_alert = shift_risk >= alert_shift_risk_threshold or hazard >= alert_hazard_threshold
+
+    # Recommended timeframe focus
+    preferred_tf = config["preferred_timeframe"]
+
+    # Playbook bias
+    pb = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
+
+    # Archetype-specific actions
+    archetype_actions = []
+    regime_num = REGIME_NUMERIC.get(exec_label, 0)
+
+    if archetype == "leverage":
+        if hazard > 50:
+            archetype_actions.append("⚠ Reduce leverage immediately — hazard elevated")
+        if regime_num <= 0:
+            archetype_actions.append("No leveraged longs in this regime")
+        if shift_risk > 60:
+            archetype_actions.append("Close leveraged positions — shift risk too high")
+
+    elif archetype == "spot_allocator":
+        if regime_num > 0 and hazard < 40:
+            archetype_actions.append("Good conditions for DCA allocation")
+        elif regime_num < 0:
+            archetype_actions.append("Pause DCA — accumulate cash for better entry")
+        else:
+            archetype_actions.append("Reduce DCA amount — neutral conditions")
+
+    elif archetype == "tactical":
+        if shift_risk > 55:
+            archetype_actions.append("Actively de-risk — shift risk rising")
+        if hazard > 55:
+            archetype_actions.append("Tighten all stops by 25%")
+        if regime_num > 0 and hazard < 35:
+            archetype_actions.append("Tactical add on pullback — conditions favorable")
+
+    elif archetype == "position":
+        if regime_num > 0 and survival > 70:
+            archetype_actions.append("Hold — regime persistence strong")
+        elif hazard > 60:
+            archetype_actions.append("Begin scaling out — hazard approaching critical")
+        else:
+            archetype_actions.append("Monitor daily regime — no change needed")
+
+    else:  # swing
+        archetype_actions.extend(pb["actions"][:3])
+
+    return {
+        "coin": coin,
+        "archetype": archetype,
+        "archetype_label": config["label"],
+        "description": config["description"],
+        "base_exposure": base_exposure,
+        "adjusted_exposure": adjusted_exposure,
+        "exposure_multiplier": config["exposure_mult"],
+        "preferred_timeframe": preferred_tf,
+        "max_hold_days": config["max_hold_days"],
+        "stop_width_multiplier": config["stop_width_mult"],
+        "alert_sensitivity": config["alert_sensitivity"],
+        "should_alert_now": should_alert,
+        "alert_thresholds": {
+            "shift_risk": alert_shift_risk_threshold,
+            "hazard": alert_hazard_threshold,
+        },
+        "archetype_actions": archetype_actions,
+        "playbook_bias": config["playbook_bias"],
+        "regime_context": {
+            "execution": exec_label,
+            "hazard": hazard,
+            "shift_risk": shift_risk,
+            "survival": survival,
+        },
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+# ─────────────────────────────────────────
+# WHAT CHANGED INTELLIGENCE BRIEF
+# ─────────────────────────────────────────
+
+def compute_what_changed(db: Session, lookback_hours: int = 24) -> dict:
+    """
+    Generates a 'What Changed' intelligence brief comparing
+    current regime state to state N hours ago.
+    """
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=lookback_hours)
+
+    changes = []
+    current_states = {}
+    previous_states = {}
+
+    for coin in SUPPORTED_COINS:
+        # Current state
+        current_stack = build_regime_stack(coin, db)
+        if current_stack["incomplete"]:
+            continue
+
+        current_states[coin] = {
+            "macro": current_stack["macro"]["label"] if current_stack.get("macro") else None,
+            "trend": current_stack["trend"]["label"] if current_stack.get("trend") else None,
+            "execution": current_stack["execution"]["label"] if current_stack.get("execution") else None,
+            "exposure": current_stack.get("exposure"),
+            "shift_risk": current_stack.get("shift_risk"),
+            "hazard": current_stack.get("hazard"),
+            "alignment": current_stack.get("alignment"),
+        }
+
+        # Previous state (find records from ~lookback_hours ago)
+        for tf in ["1d", "4h", "1h"]:
+            prev_record = (
+                db.query(MarketSummary)
+                .filter(
+                    MarketSummary.coin == coin,
+                    MarketSummary.timeframe == tf,
+                    MarketSummary.created_at <= cutoff,
+                )
+                .order_by(MarketSummary.created_at.desc())
+                .first()
+            )
+
+            current_record = (
+                db.query(MarketSummary)
+                .filter(
+                    MarketSummary.coin == coin,
+                    MarketSummary.timeframe == tf,
+                )
+                .order_by(MarketSummary.created_at.desc())
+                .first()
+            )
+
+            if prev_record and current_record:
+                if prev_record.label != current_record.label:
+                    prev_num = REGIME_NUMERIC.get(prev_record.label, 0)
+                    curr_num = REGIME_NUMERIC.get(current_record.label, 0)
+
+                    if curr_num > prev_num:
+                        direction = "upgraded"
+                        severity = "positive"
+                    else:
+                        direction = "downgraded"
+                        severity = "negative"
+
+                    tf_label = TIMEFRAME_LABELS.get(tf, tf)
+
+                    changes.append({
+                        "coin": coin,
+                        "timeframe": tf,
+                        "timeframe_label": tf_label,
+                        "previous": prev_record.label,
+                        "current": current_record.label,
+                        "direction": direction,
+                        "severity": severity,
+                        "score_change": round(current_record.score - prev_record.score, 2),
+                        "message": (
+                            f"{coin} {tf_label} regime {direction}: "
+                            f"{prev_record.label} → {current_record.label}"
+                        ),
+                    })
+
+    # ── Exposure Changes ──
+    exposure_changes = []
+    for coin, state in current_states.items():
+        # Compare with simple heuristic since we don't store historical exposure
+        if state["shift_risk"] and state["shift_risk"] > 65:
+            exposure_changes.append({
+                "coin": coin,
+                "type": "risk_warning",
+                "message": f"{coin} shift risk at {state['shift_risk']}% — elevated",
+            })
+
+    # ── Breadth Change ──
+    breadth = compute_market_breadth(db)
+
+    # ── Summary ──
+    upgrade_count = sum(1 for c in changes if c["direction"] == "upgraded")
+    downgrade_count = sum(1 for c in changes if c["direction"] == "downgraded")
+
+    if not changes:
+        headline = "No regime changes in the last 24 hours"
+        tone = "stable"
+    elif upgrade_count > downgrade_count:
+        headline = f"{upgrade_count} regime upgrades vs {downgrade_count} downgrades — market improving"
+        tone = "improving"
+    elif downgrade_count > upgrade_count:
+        headline = f"{downgrade_count} regime downgrades vs {upgrade_count} upgrades — market deteriorating"
+        tone = "deteriorating"
+    else:
+        headline = f"{len(changes)} regime changes — mixed signals"
+        tone = "mixed"
+
+    # ── Key Takeaways ──
+    takeaways = []
+    high_impact_changes = [c for c in changes if c["timeframe"] in ("1d", "4h")]
+    if high_impact_changes:
+        for c in high_impact_changes[:3]:
+            takeaways.append(c["message"])
+    else:
+        takeaways.append("No major timeframe changes — short-term noise only")
+
+    if breadth.get("breadth_score", 0) > 50:
+        takeaways.append(f"Market breadth bullish ({breadth['breadth_score']})")
+    elif breadth.get("breadth_score", 0) < -50:
+        takeaways.append(f"Market breadth bearish ({breadth['breadth_score']})")
+
+    return {
+        "lookback_hours": lookback_hours,
+        "headline": headline,
+        "tone": tone,
+        "changes": changes,
+        "change_count": len(changes),
+        "upgrades": upgrade_count,
+        "downgrades": downgrade_count,
+        "exposure_warnings": exposure_changes,
+        "breadth": breadth,
+        "takeaways": takeaways,
+        "current_states": current_states,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# DYNAMIC ALERT ENGINE
+# ─────────────────────────────────────────
+
+def evaluate_dynamic_alerts(
+    email: str,
+    db: Session,
+) -> list:
+    """
+    Evaluates all dynamic alert conditions for a user.
+    Returns list of alerts that should be fired.
+    """
+    user = db.query(User).filter(User.email == email).first()
+    if not user or user.subscription_status != "active":
+        return []
+
+    thresholds = (
+        db.query(AlertThreshold)
+        .filter(AlertThreshold.email == email, AlertThreshold.enabled == True)
+        .all()
+    )
+
+    if not thresholds:
+        # Default thresholds for all coins
+        thresholds = []
+        for coin in SUPPORTED_COINS:
+            thresholds.append(AlertThreshold(
+                email=email,
+                coin=coin,
+                shift_risk_threshold=70,
+                exposure_change_threshold=10,
+                setup_quality_threshold=70,
+                regime_quality_threshold=50,
+            ))
+
+    alerts = []
+
+    for threshold in thresholds:
+        coin = threshold.coin
+        stack = build_regime_stack(coin, db)
+        if stack["incomplete"]:
+            continue
+
+        shift_risk = stack.get("shift_risk") or 0
+        hazard = stack.get("hazard") or 0
+        exposure = stack.get("exposure") or 50
+        exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+
+        # ── Shift Risk Alert ──
+        if shift_risk >= threshold.shift_risk_threshold:
+            alerts.append({
+                "type": "shift_risk_elevated",
+                "coin": coin,
+                "severity": "high" if shift_risk > 80 else "medium",
+                "message": (
+                    f"{coin} shift risk at {shift_risk}% — "
+                    f"exceeds your threshold of {threshold.shift_risk_threshold}%"
+                ),
+                "action": f"Consider reducing {coin} exposure to {int(max(5, exposure * 0.7))}%",
+                "value": shift_risk,
+                "threshold": threshold.shift_risk_threshold,
+            })
+
+        # ── Setup Quality Alert ──
+        setup = compute_setup_quality(coin, db)
+        setup_score = setup.get("setup_quality_score") or 0
+
+        if setup_score >= threshold.setup_quality_threshold:
+            alerts.append({
+                "type": "setup_quality_upgraded",
+                "coin": coin,
+                "severity": "positive",
+                "message": (
+                    f"{coin} setup quality upgraded to {setup_score} — "
+                    f"{setup.get('setup_label', '')}. Entry mode: {setup.get('entry_mode', 'Wait')}"
+                ),
+                "action": f"Consider entering {coin} per trade plan",
+                "value": setup_score,
+                "threshold": threshold.setup_quality_threshold,
+            })
+
+        # ── Regime Quality Alert ──
+        quality = compute_regime_quality(stack)
+        if quality["score"] < threshold.regime_quality_threshold:
+            alerts.append({
+                "type": "regime_quality_degraded",
+                "coin": coin,
+                "severity": "medium",
+                "message": (
+                    f"{coin} regime quality dropped to {quality['grade']} "
+                    f"({quality['score']}) — {quality['structural']}"
+                ),
+                "action": "Reduce exposure and tighten stops",
+                "value": quality["score"],
+                "threshold": threshold.regime_quality_threshold,
+            })
+
+        # ── Exposure Misalignment Alert ──
+        recent_log = (
+            db.query(ExposureLog)
+            .filter(
+                ExposureLog.email == email,
+                ExposureLog.coin == coin,
+            )
+            .order_by(ExposureLog.created_at.desc())
+            .first()
+        )
+
+        if recent_log:
+            user_exp = recent_log.user_exposure_pct or 0
+            delta = abs(user_exp - exposure)
+            if delta > threshold.exposure_change_threshold + 10:
+                alerts.append({
+                    "type": "exposure_misalignment",
+                    "coin": coin,
+                    "severity": "medium",
+                    "message": (
+                        f"Your {coin} exposure ({user_exp}%) is {round(delta, 1)}% "
+                        f"away from model recommendation ({exposure}%)"
+                    ),
+                    "action": (
+                        f"Adjust toward {exposure}% recommended exposure"
+                    ),
+                    "value": delta,
+                    "threshold": threshold.exposure_change_threshold,
+                })
+
+        # ── Internal Damage Alert ──
+        damage = compute_internal_damage(coin, db)
+        if damage.get("internal_damage_score") and damage["internal_damage_score"] > 60:
+            alerts.append({
+                "type": "internal_damage",
+                "coin": coin,
+                "severity": "high" if damage["internal_damage_score"] > 75 else "medium",
+                "message": (
+                    f"{coin} internal damage score: {damage['internal_damage_score']} "
+                    f"({damage['damage_label']})"
+                ),
+                "action": damage["damage_message"],
+                "value": damage["internal_damage_score"],
+                "signals": [s["message"] for s in damage.get("signals", [])[:3]],
+            })
+
+    return alerts
 # ─────────────────────────────────────────
 # Daily Email Template
 # ─────────────────────────────────────────
@@ -3884,6 +6289,1397 @@ def dashboard(
         "curve": curve_data.get("data") if curve_data else [],
         "events": events_data.get("events") if events_data else [],
     }
+
+# ═════════════════════════════════════════════════
+# NEW PREMIUM ENDPOINTS (\$80/mo features)
+# ═════════════════════════════════════════════════
+
+
+# ── Setup Quality ────────────────────────────
+@app.get("/setup-quality")
+def setup_quality_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    cache_key = f"setup_quality:{coin}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"setup_quality | coin={coin} | source=cache")
+        return cached
+
+    result = compute_setup_quality(coin, db)
+
+    if result.get("setup_quality_score") is not None:
+        cache_set(cache_key, result, ttl=120)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"setup_quality | coin={coin} | source=computed | duration_ms={duration}")
+
+    return result
+
+
+# ── Opportunity Ranking ──────────────────────
+@app.get("/opportunity-ranking")
+def opportunity_ranking_endpoint(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    cache_key = "opportunity_ranking"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info("opportunity_ranking | source=cache")
+        return cached
+
+    result = compute_opportunity_ranking(db)
+    cache_set(cache_key, result, ttl=180)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"opportunity_ranking | source=computed | duration_ms={duration}")
+
+    return result
+
+
+# ── Historical Analogs ───────────────────────
+@app.get("/historical-analogs")
+def historical_analogs_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    cache_key = f"analogs:{coin}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"analogs | coin={coin} | source=cache")
+        return cached
+
+    # Get current regime for matching
+    stack = build_regime_stack(coin, db)
+    if stack["incomplete"]:
+        return {"coin": coin, "error": "Insufficient regime data"}
+
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    hazard = stack.get("hazard") or 50
+
+    result = find_historical_analogs(
+        db=db,
+        coin=coin,
+        target_macro=macro_label,
+        target_trend=trend_label,
+        target_exec=exec_label,
+        target_hazard=hazard,
+    )
+
+    if result.get("data_sufficient"):
+        cache_set(cache_key, result, ttl=300)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"analogs | coin={coin} | source=computed | duration_ms={duration}")
+
+    return result
+
+
+# ── Probabilistic Scenarios ──────────────────
+@app.get("/scenarios")
+def scenarios_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    cache_key = f"scenarios:{coin}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"scenarios | coin={coin} | source=cache")
+        return cached
+
+    result = compute_scenarios(coin, db)
+    cache_set(cache_key, result, ttl=120)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"scenarios | coin={coin} | source=computed | duration_ms={duration}")
+
+    return result
+
+
+# ── Internal Damage Monitor ──────────────────
+@app.get("/internal-damage")
+def internal_damage_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    cache_key = f"damage:{coin}"
+    cached = cache_get(cache_key)
+
+    if cached:
+        logger.info(f"internal_damage | coin={coin} | source=cache")
+        return cached
+
+    result = compute_internal_damage(coin, db)
+    cache_set(cache_key, result, ttl=120)
+
+    duration = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"internal_damage | coin={coin} | source=computed | duration_ms={duration}")
+
+    return result
+
+
+# ── Behavioral Alpha Report ──────────────────
+@app.get("/behavioral-alpha")
+def behavioral_alpha_endpoint(
+    request: Request,
+    email: str = "",
+    lookback_days: int = 30,
+    db: Session = Depends(get_db),
+):
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    email = email.strip().lower()
+    lookback_days = min(max(7, lookback_days), 90)
+
+    result = compute_behavioral_alpha_report(email, db, lookback_days)
+    return result
+
+
+# ── Trade Plan Generator ─────────────────────
+@app.post("/trade-plan")
+def trade_plan_endpoint(
+    request: Request,
+    body: TradePlanRequest,
+    db: Session = Depends(get_db),
+):
+    if body.coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if body.account_size <= 0:
+        raise HTTPException(status_code=400, detail="Invalid account size")
+    if body.strategy_mode not in ARCHETYPE_CONFIG:
+        raise HTTPException(status_code=400, detail=f"Invalid strategy. Choose from: {list(ARCHETYPE_CONFIG.keys())}")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    email = body.email.strip().lower()
+
+    result = compute_trade_plan(
+        coin=body.coin,
+        account_size=body.account_size,
+        strategy_mode=body.strategy_mode,
+        db=db,
+        email=email,
+    )
+    return result
+
+
+# ── Event Risk Overlay ───────────────────────
+@app.get("/event-risk-overlay")
+def event_risk_overlay_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    cache_key = f"event_risk:{coin}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    result = compute_event_risk_overlay(coin, db)
+    cache_set(cache_key, result, ttl=300)
+
+    return result
+
+
+# ── Trader Archetype Overlay ─────────────────
+@app.get("/archetype-overlay")
+def archetype_overlay_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    archetype: str = "swing",
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if archetype not in ARCHETYPE_CONFIG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid archetype. Choose from: {list(ARCHETYPE_CONFIG.keys())}",
+        )
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    result = apply_archetype_overlay(
+        coin=coin,
+        archetype=archetype,
+        db=db,
+        email=email.strip().lower() if email else None,
+    )
+    return result
+
+
+# ── What Changed Brief ───────────────────────
+@app.get("/what-changed")
+def what_changed_endpoint(
+    request: Request,
+    lookback_hours: int = 24,
+    db: Session = Depends(get_db),
+):
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    lookback_hours = min(max(1, lookback_hours), 168)
+
+    cache_key = f"what_changed:{lookback_hours}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    result = compute_what_changed(db, lookback_hours)
+    cache_set(cache_key, result, ttl=120)
+
+    return result
+
+
+# ── Dynamic Alert Thresholds (CRUD) ──────────
+@app.post("/alert-thresholds")
+def save_alert_thresholds(
+    request: Request,
+    body: AlertThresholdRequest,
+    db: Session = Depends(get_db),
+):
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+
+    email = body.email.strip().lower()
+
+    existing = (
+        db.query(AlertThreshold)
+        .filter(
+            AlertThreshold.email == email,
+            AlertThreshold.coin == body.coin,
+        )
+        .first()
+    )
+
+    if existing:
+        existing.shift_risk_threshold = body.shift_risk_threshold
+        existing.exposure_change_threshold = body.exposure_change_threshold
+        existing.setup_quality_threshold = body.setup_quality_threshold
+        existing.regime_quality_threshold = body.regime_quality_threshold
+    else:
+        existing = AlertThreshold(
+            email=email,
+            coin=body.coin,
+            shift_risk_threshold=body.shift_risk_threshold,
+            exposure_change_threshold=body.exposure_change_threshold,
+            setup_quality_threshold=body.setup_quality_threshold,
+            regime_quality_threshold=body.regime_quality_threshold,
+        )
+        db.add(existing)
+
+    db.commit()
+
+    return {
+        "status": "saved",
+        "email": email,
+        "coin": body.coin,
+        "thresholds": {
+            "shift_risk": body.shift_risk_threshold,
+            "exposure_change": body.exposure_change_threshold,
+            "setup_quality": body.setup_quality_threshold,
+            "regime_quality": body.regime_quality_threshold,
+        },
+    }
+
+
+@app.get("/alert-thresholds")
+def get_alert_thresholds(
+    request: Request,
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+
+    email = email.strip().lower()
+    thresholds = (
+        db.query(AlertThreshold)
+        .filter(AlertThreshold.email == email)
+        .all()
+    )
+
+    return {
+        "email": email,
+        "thresholds": [
+            {
+                "coin": t.coin,
+                "shift_risk_threshold": t.shift_risk_threshold,
+                "exposure_change_threshold": t.exposure_change_threshold,
+                "setup_quality_threshold": t.setup_quality_threshold,
+                "regime_quality_threshold": t.regime_quality_threshold,
+                "enabled": t.enabled,
+            }
+            for t in thresholds
+        ],
+    }
+
+
+# ── Dynamic Alerts Evaluation ────────────────
+@app.get("/evaluate-alerts")
+def evaluate_alerts_endpoint(
+    request: Request,
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    if not email:
+        raise HTTPException(status_code=400, detail="Email required")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    email = email.strip().lower()
+    alerts = evaluate_dynamic_alerts(email, db)
+
+    return {
+        "email": email,
+        "alerts": alerts,
+        "alert_count": len(alerts),
+        "high_severity_count": sum(1 for a in alerts if a.get("severity") == "high"),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+# ── Send Dynamic Alerts (CRON) ───────────────
+@app.get("/send-dynamic-alerts")
+def send_dynamic_alerts(secret: str = "", db: Session = Depends(get_db)):
+    """
+    Evaluates and sends dynamic alerts for all Pro users.
+    Called by cron job every 1-2 hours.
+    """
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    pro_users = db.query(User).filter(
+        User.subscription_status == "active",
+        User.alerts_enabled == True,
+    ).all()
+
+    sent = 0
+    errors = 0
+
+    for user in pro_users:
+        try:
+            # Throttle: max 1 alert per 6 hours
+            if user.last_alert_sent:
+                hrs = (
+                    datetime.datetime.utcnow() - user.last_alert_sent
+                ).total_seconds() / 3600
+                if hrs < 6:
+                    continue
+
+            alerts = evaluate_dynamic_alerts(user.email, db)
+            high_alerts = [a for a in alerts if a.get("severity") == "high"]
+
+            if not high_alerts:
+                continue
+
+            # Build alert email
+            alerts_html = ""
+            for alert in high_alerts[:5]:
+                color = "#f87171" if alert["severity"] == "high" else "#facc15"
+                alerts_html += f"""
+                <div style="border:1px solid {color};padding:16px;margin-bottom:12px;border-radius:8px;">
+                    <div style="color:{color};font-weight:600;font-size:14px;">
+                        {alert.get('coin', '')} — {alert.get('type', '').replace('_', ' ').title()}
+                    </div>
+                    <div style="color:#ccc;font-size:13px;margin-top:8px;">
+                        {alert.get('message', '')}
+                    </div>
+                    <div style="color:#999;font-size:12px;margin-top:8px;">
+                    Action: {alert.get('action', '')}
+                    </div>
+                </div>
+                """
+
+            email_html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;
+            background:#000;color:#fff;padding:40px;">
+  <div style="font-size:11px;color:#555;text-transform:uppercase;
+              letter-spacing:2px;margin-bottom:16px;">ChainPulse Dynamic Alert</div>
+  <h2 style="color:#f87171;margin-bottom:24px;">
+    {len(high_alerts)} High-Priority Alert{"s" if len(high_alerts) > 1 else ""}
+  </h2>
+  {alerts_html}
+  <a href="{FRONTEND_URL}/app?token={user.access_token or ''}"
+     style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
+            margin-top:24px;text-decoration:none;font-weight:bold;border-radius:4px;">
+    Open Dashboard
+  </a>
+  <p style="color:#333;font-size:11px;margin-top:40px;
+            border-top:1px solid #111;padding-top:20px;">
+    ChainPulse. Not financial advice.
+  </p>
+</div>
+"""
+            send_email(
+                user.email,
+                f"ChainPulse Alert — {len(high_alerts)} High Priority",
+                email_html,
+            )
+            user.last_alert_sent = datetime.datetime.utcnow()
+            db.commit()
+            sent += 1
+
+        except Exception as e:
+            logger.error(f"Dynamic alert failed for {user.email}: {e}")
+            errors += 1
+
+    return {"status": "complete", "alerts_sent": sent, "errors": errors}
+
+
+# ── Archetype List ───────────────────────────
+@app.get("/archetypes")
+def list_archetypes():
+    """Returns all available trader archetypes and their configurations."""
+    return {
+        "archetypes": {
+            key: {
+                "label": config["label"],
+                "description": config["description"],
+                "exposure_mult": config["exposure_mult"],
+                "alert_sensitivity": config["alert_sensitivity"],
+                "preferred_timeframe": config["preferred_timeframe"],
+                "max_hold_days": config["max_hold_days"],
+                "stop_width_mult": config["stop_width_mult"],
+                "playbook_bias": config["playbook_bias"],
+            }
+            for key, config in ARCHETYPE_CONFIG.items()
+        }
+    }
+
+
+# ── Save User Archetype ─────────────────────
+@app.post("/save-archetype")
+def save_archetype_endpoint(
+    request: Request,
+    body: TraderArchetype,
+    db: Session = Depends(get_db),
+):
+    if body.archetype not in ARCHETYPE_CONFIG:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid archetype. Choose from: {list(ARCHETYPE_CONFIG.keys())}",
+        )
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+
+    email = body.email.strip().lower()
+    config = ARCHETYPE_CONFIG[body.archetype]
+
+    profile = db.query(UserProfile).filter(UserProfile.email == email).first()
+    if not profile:
+        user = db.query(User).filter(User.email == email).first()
+        profile = UserProfile(
+            email=email,
+            user_id=user.id if user else None,
+        )
+        db.add(profile)
+
+    profile.risk_identity = body.archetype
+    profile.risk_multiplier = config["exposure_mult"]
+    profile.holding_period_days = config["max_hold_days"]
+    profile.updated_at = datetime.datetime.utcnow()
+    db.commit()
+
+    return {
+        "status": "saved",
+        "email": email,
+        "archetype": body.archetype,
+        "archetype_label": config["label"],
+        "exposure_multiplier": config["exposure_mult"],
+        "max_hold_days": config["max_hold_days"],
+        "alert_sensitivity": config["alert_sensitivity"],
+    }
+
+
+# ── Full Premium Dashboard (Batched) ─────────
+@app.get("/premium-dashboard")
+def premium_dashboard(
+    request: Request,
+    coin: str = "BTC",
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Single endpoint that returns all premium data for a coin.
+    Reduces frontend API calls from 15+ to 1.
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+    email = email.strip().lower() if email else ""
+
+    # ── Core Stack ──
+    stack = build_regime_stack(coin, db)
+
+    # ── Regime Quality ──
+    quality = compute_regime_quality(stack) if not stack.get("incomplete") else None
+
+    # ── Statistics ──
+    age_1h = current_age(db, coin, "1h")
+    avg_dur = average_regime_duration(db, coin, "1h")
+    hazard_val = stack.get("hazard") or 0
+    maturity = trend_maturity_score(age_1h, avg_dur, hazard_val)
+
+    exec_score = stack["execution"]["score"] if stack.get("execution") else 0
+    pct_rank = percentile_rank(db, coin, exec_score, "1h")
+
+    # ── Setup Quality ──
+    try:
+        setup = compute_setup_quality(coin, db)
+    except Exception:
+        setup = {"setup_quality_score": None, "error": "Failed"}
+
+    # ── Decision Engine ──
+    breadth = compute_market_breadth(db)
+    decision = None
+    if not stack.get("incomplete"):
+        try:
+            decision = compute_decision_score(
+                hazard=hazard_val,
+                shift_risk=stack.get("shift_risk") or 0,
+                alignment=stack.get("alignment") or 0,
+                survival=stack.get("survival") or 50,
+                breadth_score=breadth.get("breadth_score", 0),
+                maturity_pct=maturity,
+            )
+            exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+            decision["regime"] = exec_label
+            decision["exposure"] = stack.get("exposure", 50)
+            decision["coin"] = coin
+            decision["model_version"] = MODEL_VERSION
+        except Exception:
+            decision = None
+
+    # ── Scenarios ──
+    try:
+        scenarios = compute_scenarios(coin, db)
+    except Exception:
+        scenarios = None
+
+    # ── Internal Damage ──
+    try:
+        damage = compute_internal_damage(coin, db)
+    except Exception:
+        damage = None
+
+    # ── Event Risk ──
+    try:
+        event_risk = compute_event_risk_overlay(coin, db)
+    except Exception:
+        event_risk = None
+
+    # ── Survival Curve ──
+    try:
+        durations = regime_durations(db, coin, "1h")
+        if len(durations) >= 5:
+            max_dur = int(max(durations))
+            curve = []
+            for hour in range(max_dur + 1):
+                survivors = [d for d in durations if d > hour]
+                surv_pct = (len(survivors) / len(durations)) * 100
+                hz = 0.0
+                if hour > 0 and survivors:
+                    exited = [d for d in durations if hour - 1 < d <= hour]
+                    hz = (len(exited) / len(survivors)) * 100
+                curve.append({
+                    "hour": hour,
+                    "survival": round(surv_pct, 2),
+                    "hazard": round(hz, 2),
+                })
+            survival_data = {"data": curve, "source": "historical"}
+        else:
+            survival_data = {
+                "data": [
+                    {"hour": h, "survival": max(0, 100 - h * 4), "hazard": min(100, h * 4.5)}
+                    for h in range(25)
+                ],
+                "source": "estimated",
+            }
+    except Exception:
+        survival_data = {"data": [], "source": "error"}
+
+    # ── Transitions ──
+    try:
+        transitions = regime_transition_matrix(db, coin, "1h")
+    except Exception:
+        transitions = None
+
+    # ── Volatility Environment ──
+    try:
+        vol_env = volatility_environment(coin, db)
+    except Exception:
+        vol_env = None
+
+    # ── Playbook ──
+    exec_label = stack["execution"]["label"] if (
+        not stack.get("incomplete") and stack.get("execution")
+    ) else "Neutral"
+    pb = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
+
+    # ── History ──
+    records = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1h",
+        )
+        .order_by(MarketSummary.created_at.desc())
+        .limit(48)
+        .all()
+    )
+    records.reverse()
+    history = [
+        {
+            "hour": i,
+            "score": r.score,
+            "label": r.label,
+            "coherence": r.coherence,
+            "timestamp": r.created_at,
+        }
+        for i, r in enumerate(records)
+    ]
+
+    # ── User-specific data ──
+    discipline = None
+    behavioral = None
+    user_alerts = None
+
+    if email:
+        try:
+            logs = (
+                db.query(ExposureLog)
+                .filter(ExposureLog.email == email)
+                .order_by(ExposureLog.created_at.desc())
+                .limit(30)
+                .all()
+            )
+            discipline = compute_discipline_score(logs)
+        except Exception:
+            discipline = None
+
+        try:
+            behavioral = compute_behavioral_alpha_report(email, db, 30)
+        except Exception:
+            behavioral = None
+
+        try:
+            user_alerts = evaluate_dynamic_alerts(email, db)
+        except Exception:
+            user_alerts = None
+
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"premium_dashboard | coin={coin} | duration_ms={duration_ms}")
+
+    return {
+        "coin": coin,
+        "stack": {
+            "coin": stack["coin"],
+            "macro": stack.get("macro"),
+            "trend": stack.get("trend"),
+            "execution": stack.get("execution"),
+            "alignment": stack.get("alignment"),
+            "direction": stack.get("direction"),
+            "exposure": stack.get("exposure"),
+            "shift_risk": stack.get("shift_risk"),
+            "survival": stack.get("survival"),
+            "hazard": stack.get("hazard"),
+            "incomplete": stack.get("incomplete", False),
+        },
+        "quality": quality,
+        "setup": setup,
+        "decision": decision,
+        "scenarios": scenarios,
+        "damage": damage,
+        "event_risk": event_risk,
+        "survival_curve": survival_data,
+        "transitions": transitions,
+        "volatility_env": vol_env,
+        "playbook": {
+            "regime": exec_label,
+            "strategy_mode": pb["strategy_mode"],
+            "exposure_band": pb["exposure_band"],
+            "trend_follow_wr": pb["trend_follow_wr"],
+            "mean_revert_wr": pb["mean_revert_wr"],
+            "avg_remaining_days": pb["avg_remaining_days"],
+            "actions": pb["actions"],
+            "avoid": pb["avoid"],
+        },
+        "breadth": breadth,
+        "history": history,
+        "statistics": {
+            "trend_maturity": maturity,
+            "percentile": pct_rank,
+            "regime_age_hours": round(age_1h, 2),
+            "avg_regime_duration_hours": round(avg_dur, 2),
+        },
+        "discipline": discipline,
+        "behavioral_alpha": behavioral,
+        "user_alerts": user_alerts,
+        "model_version": MODEL_VERSION,
+        "duration_ms": duration_ms,
+    }
+
+
+# ── Send What Changed Email (CRON) ──────────
+@app.get("/send-what-changed")
+def send_what_changed_email(secret: str = "", db: Session = Depends(get_db)):
+    """
+    Sends weekly 'What Changed' intelligence brief to all Pro users.
+    Designed to be called by cron job every Monday and Thursday.
+    """
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    what_changed = compute_what_changed(db, lookback_hours=72)
+
+    pro_users = db.query(User).filter(
+        User.subscription_status == "active",
+        User.alerts_enabled == True,
+    ).all()
+
+    # Build email HTML
+    changes_html = ""
+    for change in what_changed.get("changes", [])[:10]:
+        color = "#4ade80" if change["severity"] == "positive" else "#f87171"
+        changes_html += f"""
+        <tr>
+            <td style="padding:10px 8px;border-bottom:1px solid #1f1f1f;
+                       color:#fff;font-weight:600;">{change['coin']}</td>
+            <td style="padding:10px 8px;border-bottom:1px solid #1f1f1f;
+                       color:#999;font-size:12px;">{change['timeframe_label']}</td>
+            <td style="padding:10px 8px;border-bottom:1px solid #1f1f1f;
+                       color:#999;font-size:12px;">{change['previous']}</td>
+            <td style="padding:10px 8px;border-bottom:1px solid #1f1f1f;
+                       color:{color};font-weight:600;">→ {change['current']}</td>
+        </tr>
+        """
+
+    if not changes_html:
+        changes_html = """
+        <tr>
+            <td colspan="4" style="padding:16px;color:#555;font-size:13px;">
+                No regime changes in the last 72 hours. Market stable.
+            </td>
+        </tr>
+        """
+
+    takeaways_html = ""
+    for t in what_changed.get("takeaways", []):
+        takeaways_html += f'<li style="color:#999;font-size:13px;line-height:2;">{t}</li>'
+
+    tone = what_changed.get("tone", "stable")
+    tone_color = {
+        "improving": "#4ade80",
+        "deteriorating": "#f87171",
+        "mixed": "#facc15",
+        "stable": "#999",
+    }.get(tone, "#999")
+
+    sent = 0
+    errors = 0
+
+    for user in pro_users:
+        try:
+            url = (
+                f"{FRONTEND_URL}/app?token={user.access_token}"
+                if user.access_token
+                else f"{FRONTEND_URL}/app"
+            )
+
+            email_html = f"""
+<div style="font-family:sans-serif;max-width:640px;margin:0 auto;
+            background:#000;color:#fff;padding:40px;">
+  <div style="font-size:11px;color:#555;text-transform:uppercase;
+              letter-spacing:2px;margin-bottom:16px;">
+    ChainPulse Intelligence Brief
+  </div>
+  <h1 style="font-size:22px;margin-bottom:8px;">What Changed — Last 72 Hours</h1>
+  <p style="color:{tone_color};font-size:14px;margin-bottom:24px;">
+    {what_changed.get('headline', 'No major changes')}
+  </p>
+
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+    <thead>
+      <tr>
+        <th style="text-align:left;padding:8px;color:#444;font-size:11px;
+                   text-transform:uppercase;border-bottom:1px solid #222;">Asset</th>
+        <th style="text-align:left;padding:8px;color:#444;font-size:11px;
+                   text-transform:uppercase;border-bottom:1px solid #222;">Timeframe</th>
+        <th style="text-align:left;padding:8px;color:#444;font-size:11px;
+                   text-transform:uppercase;border-bottom:1px solid #222;">Previous</th>
+        <th style="text-align:left;padding:8px;color:#444;font-size:11px;
+                   text-transform:uppercase;border-bottom:1px solid #222;">Current</th>
+      </tr>
+    </thead>
+    <tbody>{changes_html}</tbody>
+  </table>
+
+  <div style="border:1px solid #1f1f1f;padding:20px;margin-bottom:24px;">
+    <div style="font-size:11px;color:#555;text-transform:uppercase;
+                letter-spacing:1px;margin-bottom:12px;">Key Takeaways</div>
+    <ul style="padding-left:16px;margin:0;">{takeaways_html}</ul>
+  </div>
+
+  <div style="margin-bottom:24px;">
+    <div style="font-size:11px;color:#555;text-transform:uppercase;
+                letter-spacing:1px;margin-bottom:8px;">Market Breadth</div>
+    <p style="color:#999;font-size:13px;">
+        Bullish: {what_changed.get('breadth', {}).get('bullish', 0)} · 
+        Neutral: {what_changed.get('breadth', {}).get('neutral', 0)} · 
+        Bearish: {what_changed.get('breadth', {}).get('bearish', 0)} · 
+        Score: {what_changed.get('breadth', {}).get('breadth_score', 0)}
+    </p>
+  </div>
+
+  <a href="{url}"
+     style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
+            text-decoration:none;font-weight:bold;border-radius:4px;">
+    Open Dashboard
+  </a>
+  <p style="color:#333;font-size:11px;margin-top:40px;
+            border-top:1px solid #111;padding-top:20px;">
+    ChainPulse. Not financial advice.
+  </p>
+</div>
+"""
+            send_email(
+                user.email,
+                f"ChainPulse — What Changed ({what_changed.get('tone', 'Update').title()})",
+                email_html,
+            )
+            sent += 1
+
+        except Exception as e:
+            logger.error(f"What Changed email failed for {user.email}: {e}")
+            errors += 1
+
+    return {"status": "complete", "sent": sent, "errors": errors}
+
+
+# ── Combined Overview with Setup Quality ─────
+@app.get("/premium-overview")
+def premium_overview(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns market overview for all coins with setup quality
+    and opportunity ranking included. Single call for overview page.
+    """
+    if not resolve_pro_status(get_auth_header(request), db):
+        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    update_last_active(request, db)
+
+    start = time.perf_counter()
+
+    cache_key = "premium_overview"
+    cached = cache_get(cache_key)
+    if cached:
+        logger.info("premium_overview | source=cache")
+        return cached
+
+    coins_data = []
+    for coin in SUPPORTED_COINS:
+        stack = build_regime_stack(coin, db)
+        if stack["incomplete"]:
+            continue
+
+        quality = compute_regime_quality(stack)
+
+        # Lightweight setup quality (skip full computation for overview)
+        try:
+            setup = compute_setup_quality(coin, db)
+            setup_score = setup.get("setup_quality_score")
+            setup_label = setup.get("setup_label")
+            entry_mode = setup.get("entry_mode")
+            chase_risk = setup.get("chase_risk")
+        except Exception:
+            setup_score = None
+            setup_label = None
+            entry_mode = None
+            chase_risk = None
+
+        coins_data.append({
+            "coin": coin,
+            "macro": stack["macro"]["label"] if stack.get("macro") else None,
+            "trend": stack["trend"]["label"] if stack.get("trend") else None,
+            "execution": stack["execution"]["label"] if stack.get("execution") else None,
+            "alignment": stack.get("alignment"),
+            "direction": stack.get("direction"),
+            "exposure": stack.get("exposure"),
+            "shift_risk": stack.get("shift_risk"),
+            "hazard": stack.get("hazard"),
+            "survival": stack.get("survival"),
+            "quality_grade": quality["grade"],
+            "quality_score": quality["score"],
+            "setup_score": setup_score,
+            "setup_label": setup_label,
+            "entry_mode": entry_mode,
+            "chase_risk": chase_risk,
+        })
+
+    # Sort by opportunity
+    coins_data.sort(
+        key=lambda x: (x.get("setup_score") or 0) * 0.5 + (x.get("quality_score") or 0) * 0.5,
+        reverse=True,
+    )
+
+    breadth = compute_market_breadth(db)
+
+    # Quick opportunity ranking
+    best_long = None
+    avoid = []
+    for c in coins_data:
+        if c["direction"] == "bullish" and best_long is None:
+            best_long = c["coin"]
+        if (c.get("setup_score") or 0) < 30 or (c.get("chase_risk") or 0) > 80:
+            avoid.append(c["coin"])
+
+    result = {
+        "coins": coins_data,
+        "breadth": breadth,
+        "best_long": best_long,
+        "avoid": avoid,
+        "coin_count": len(coins_data),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+    cache_set(cache_key, result, ttl=120)
+
+    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    logger.info(f"premium_overview | source=computed | duration_ms={duration_ms}")
+
+    return result
+
+
+# ── Comprehensive Cron Endpoint ──────────────
+@app.get("/cron-all")
+def cron_all(secret: str = "", db: Session = Depends(get_db)):
+    """
+    Master cron endpoint. Updates all market data,
+    evaluates alerts, and sends notifications.
+    Call every hour.
+    """
+    if secret != UPDATE_SECRET:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    results = {"updates": [], "alerts_sent": 0, "errors": []}
+
+    # 1. Update all coins and timeframes
+    for coin in SUPPORTED_COINS:
+        for tf in SUPPORTED_TIMEFRAMES:
+            try:
+                entry = update_market(coin, tf, db)
+                if entry:
+                    results["updates"].append({
+                        "coin": coin,
+                        "timeframe": tf,
+                        "label": entry.label,
+                        "score": entry.score,
+                    })
+            except Exception as e:
+                results["errors"].append(f"Update {coin}/{tf}: {str(e)}")
+
+    # 2. Send dynamic alerts
+    try:
+        pro_users = db.query(User).filter(
+            User.subscription_status == "active",
+            User.alerts_enabled == True,
+        ).all()
+
+        for user in pro_users:
+            try:
+                if user.last_alert_sent:
+                    hrs = (
+                        datetime.datetime.utcnow() - user.last_alert_sent
+                    ).total_seconds() / 3600
+                    if hrs < 6:
+                        continue
+
+                alerts = evaluate_dynamic_alerts(user.email, db)
+                high_alerts = [a for a in alerts if a.get("severity") == "high"]
+
+                if not high_alerts:
+                    continue
+
+                # Build compact alert summary
+                alert_lines = []
+                for a in high_alerts[:3]:
+                    alert_lines.append(
+                        f"• {a.get('coin', '')} — {a.get('message', '')}"
+                    )
+
+                alert_text = "<br>".join(alert_lines)
+
+                send_email(
+                    user.email,
+                    f"ChainPulse — {len(high_alerts)} Alert{'s' if len(high_alerts) > 1 else ''}",
+                    f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;
+            background:#000;color:#fff;padding:40px;">
+  <div style="font-size:11px;color:#555;text-transform:uppercase;
+              letter-spacing:2px;margin-bottom:16px;">ChainPulse Alert</div>
+  <h2 style="color:#f87171;margin-bottom:24px;">
+    {len(high_alerts)} High-Priority Alert{'s' if len(high_alerts) > 1 else ''}
+  </h2>
+  <div style="color:#ccc;font-size:14px;line-height:2;">
+    {alert_text}
+  </div>
+  <a href="{FRONTEND_URL}/app?token={user.access_token or ''}"
+     style="display:inline-block;background:#fff;color:#000;padding:14px 28px;
+            margin-top:24px;text-decoration:none;font-weight:bold;border-radius:4px;">
+    Open Dashboard
+  </a>
+  <p style="color:#333;font-size:11px;margin-top:40px;">
+    ChainPulse. Not financial advice.
+  </p>
+</div>
+""",
+                )
+                user.last_alert_sent = datetime.datetime.utcnow()
+                db.commit()
+                results["alerts_sent"] += 1
+
+            except Exception as e:
+                results["errors"].append(f"Alert {user.email}: {str(e)}")
+
+    except Exception as e:
+        results["errors"].append(f"Alert dispatch: {str(e)}")
+
+    return {
+        "status": "complete",
+        "updates": len(results["updates"]),
+        "alerts_sent": results["alerts_sent"],
+        "errors": len(results["errors"]),
+        "error_details": results["errors"][:10],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+# ─────────────────────────────────────────
+# UPDATED DASHBOARD (replaces existing)
+# ─────────────────────────────────────────
+@app.get("/dashboard-v2")
+def dashboard_v2(
+    request: Request,
+    coin: str = "BTC",
+    email: str = "",
+    db: Session = Depends(get_db),
+):
+    """
+    Enhanced dashboard endpoint with all new premium features.
+    Free users get basic data. Pro users get everything.
+    """
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(status_code=400, detail="Unsupported coin")
+
+    authorization = get_auth_header(request)
+    is_pro = resolve_pro_status(authorization, db)
+    email = email.strip().lower() if email else ""
+
+    # ── Core (Free) ──
+    stack_response = regime_stack_endpoint(request, coin, db)
+    latest_data = latest(coin, db)
+
+    records = (
+        db.query(MarketSummary)
+        .filter(
+            MarketSummary.coin == coin,
+            MarketSummary.timeframe == "1h",
+        )
+        .order_by(MarketSummary.created_at.desc())
+        .limit(48)
+        .all()
+    )
+    records.reverse()
+    history_data = [
+        {
+            "hour": i,
+            "score": r.score,
+            "label": r.label,
+            "coherence": r.coherence,
+            "timestamp": r.created_at,
+        }
+        for i, r in enumerate(records)
+    ]
+
+    overview_data = market_overview(request, "ALL", db)
+    events_data = RISK_EVENTS
+
+    result = {
+        "stack": stack_response,
+        "latest": latest_data,
+        "history": history_data,
+        "overview": overview_data.get("data") if overview_data else [],
+        "breadth": overview_data.get("breadth") if overview_data else None,
+        "events": events_data,
+        "is_pro": is_pro,
+    }
+
+    if not is_pro:
+        result["pro_features_available"] = [
+            "setup_quality",
+            "scenarios",
+            "internal_damage",
+            "event_risk",
+            "trade_plan",
+            "behavioral_alpha",
+            "opportunity_ranking",
+            "historical_analogs",
+            "archetype_overlay",
+            "what_changed",
+            "dynamic_alerts",
+            "premium_overview",
+        ]
+        return result
+
+    # ── Pro Data ──
+    update_last_active(request, db)
+
+    # Setup Quality
+    try:
+        result["setup_quality"] = compute_setup_quality(coin, db)
+    except Exception:
+        result["setup_quality"] = None
+
+    # Decision Engine
+    try:
+        stack = build_regime_stack(coin, db)
+        breadth = compute_market_breadth(db)
+        if not stack.get("incomplete"):
+            hazard = stack.get("hazard") or 0
+            age_1h = current_age(db, coin, "1h")
+            avg_dur = average_regime_duration(db, coin, "1h")
+            maturity = trend_maturity_score(age_1h, avg_dur, hazard)
+
+            decision = compute_decision_score(
+                hazard=hazard,
+                shift_risk=stack.get("shift_risk") or 0,
+                alignment=stack.get("alignment") or 0,
+                survival=stack.get("survival") or 50,
+                breadth_score=breadth.get("breadth_score", 0),
+                maturity_pct=maturity,
+            )
+            exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+            decision["regime"] = exec_label
+            decision["exposure"] = stack.get("exposure", 50)
+            decision["coin"] = coin
+            decision["model_version"] = MODEL_VERSION
+            result["decision"] = decision
+        else:
+            result["decision"] = None
+    except Exception:
+        result["decision"] = None
+
+    # Scenarios
+    try:
+        result["scenarios"] = compute_scenarios(coin, db)
+    except Exception:
+        result["scenarios"] = None
+
+    # Internal Damage
+    try:
+        result["internal_damage"] = compute_internal_damage(coin, db)
+    except Exception:
+        result["internal_damage"] = None
+
+    # Event Risk
+    try:
+        result["event_risk"] = compute_event_risk_overlay(coin, db)
+    except Exception:
+        result["event_risk"] = None
+
+    # Regime Quality
+    try:
+        result["regime_quality"] = compute_regime_quality(stack) if not stack.get("incomplete") else None
+    except Exception:
+        result["regime_quality"] = None
+
+    # Survival Curve
+    try:
+        durations_list = regime_durations(db, coin, "1h")
+        if len(durations_list) >= 5:
+            max_d = int(max(durations_list))
+            curve = []
+            for hour in range(max_d + 1):
+                survivors = [d for d in durations_list if d > hour]
+                surv_pct = (len(survivors) / len(durations_list)) * 100
+                hz = 0.0
+                if hour > 0 and survivors:
+                    exited = [d for d in durations_list if hour - 1 < d <= hour]
+                    hz = (len(exited) / len(survivors)) * 100
+                curve.append({"hour": hour, "survival": round(surv_pct, 2), "hazard": round(hz, 2)})
+            result["survival_curve"] = {"data": curve, "source": "historical"}
+        else:
+            result["survival_curve"] = {
+                "data": [
+                    {"hour": h, "survival": max(0, 100 - h * 4), "hazard": min(100, h * 4.5)}
+                    for h in range(25)
+                ],
+                "source": "estimated",
+            }
+    except Exception:
+        result["survival_curve"] = {"data": [], "source": "error"}
+
+    # Transitions
+    try:
+        result["transitions"] = regime_transition_matrix(db, coin, "1h")
+    except Exception:
+        result["transitions"] = None
+
+    # Volatility Environment
+    try:
+        result["volatility_env"] = volatility_environment(coin, db)
+    except Exception:
+        result["volatility_env"] = None
+
+    # Correlation
+    try:
+        result["correlation"] = build_correlation_matrix(SUPPORTED_COINS[:5])
+    except Exception:
+        result["correlation"] = None
+
+    # Confidence
+    try:
+        survival_val = stack.get("survival") or 50
+        coherence_val = stack["execution"]["coherence"] if (
+            stack.get("execution") and stack["execution"].get("coherence")
+        ) else 50
+        result["confidence"] = regime_confidence_score(
+            alignment=stack.get("alignment") or 0,
+            survival=survival_val,
+            coherence=coherence_val,
+            breadth_score=breadth.get("breadth_score", 0),
+        )
+    except Exception:
+        result["confidence"] = None
+
+    # Playbook
+    try:
+        exec_lbl = stack["execution"]["label"] if (
+            not stack.get("incomplete") and stack.get("execution")
+        ) else "Neutral"
+        pb = PLAYBOOK_DATA.get(exec_lbl, PLAYBOOK_DATA["Neutral"])
+        result["playbook"] = {
+            "regime": exec_lbl,
+            "strategy_mode": pb["strategy_mode"],
+            "exposure_band": pb["exposure_band"],
+            "trend_follow_wr": pb["trend_follow_wr"],
+            "mean_revert_wr": pb["mean_revert_wr"],
+            "avg_remaining_days": pb["avg_remaining_days"],
+            "actions": pb["actions"],
+            "avoid": pb["avoid"],
+        }
+    except Exception:
+        result["playbook"] = None
+
+    # ── User-Specific ──
+    if email:
+        try:
+            logs = (
+                db.query(ExposureLog)
+                .filter(ExposureLog.email == email)
+                .order_by(ExposureLog.created_at.desc())
+                .limit(30)
+                .all()
+            )
+            result["discipline"] = compute_discipline_score(logs)
+        except Exception:
+            result["discipline"] = None
+
+        try:
+            result["behavioral_alpha"] = compute_behavioral_alpha_report(email, db, 30)
+        except Exception:
+            result["behavioral_alpha"] = None
+
+        try:
+            result["user_alerts"] = evaluate_dynamic_alerts(email, db)
+        except Exception:
+            result["user_alerts"] = None
+
+        try:
+            profile = db.query(UserProfile).filter(UserProfile.email == email).first()
+            if profile:
+                result["user_profile"] = {
+                    "risk_identity": profile.risk_identity,
+                    "risk_multiplier": profile.risk_multiplier,
+                    "max_drawdown_pct": profile.max_drawdown_pct,
+                    "holding_period_days": profile.holding_period_days,
+                }
+            else:
+                result["user_profile"] = None
+        except Exception:
+            result["user_profile"] = None
+
+    result["model_version"] = MODEL_VERSION
+    return result
+                        
 
 
 
