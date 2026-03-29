@@ -3701,9 +3701,9 @@ def health():
 @app.get("/pricing-info")
 def pricing_info():
     return {
-        "monthly": {"price": PRICE_MONTHLY, "currency": "USD", "label": "\$39 / month", "period": "month"},
+        "monthly": {"price": PRICE_MONTHLY, "currency": "USD", "label": "$39 / month", "period": "month"},
         "annual": {
-            "price": PRICE_ANNUAL, "currency": "USD", "label": "\$348 / year", "period": "year",
+            "price": PRICE_ANNUAL, "currency": "USD", "label": "$348 / year", "period": "year",
             "saving": (PRICE_MONTHLY * 12) - PRICE_ANNUAL,
             "saving_pct": round(((PRICE_MONTHLY * 12 - PRICE_ANNUAL) / (PRICE_MONTHLY * 12)) * 100, 1),
         },
