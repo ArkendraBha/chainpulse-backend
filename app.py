@@ -4,7 +4,7 @@
 from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Index
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Index, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel, EmailStr  # CHANGED: Added EmailStr for email validation
 from dotenv import load_dotenv
@@ -35,17 +35,37 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./chainpulse.db")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
-STRIPE_PRICE_ID_ANNUAL = os.getenv("STRIPE_PRICE_ID_ANNUAL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 UPDATE_SECRET = os.getenv("UPDATE_SECRET", "changeme")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
 BACKEND_URL = os.getenv("BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com")
 RESEND_FROM_EMAIL = (os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev").strip()
+# ─────────────────────────────────────────
+# STRIPE PRICE IDS
+# ─────────────────────────────────────────
+STRIPE_PRICE_MAP = {
+    "essential": {
+        "monthly": os.getenv("STRIPE_PRICE_ESSENTIAL_MONTHLY", ""),
+        "annual": os.getenv("STRIPE_PRICE_ESSENTIAL_ANNUAL", ""),
+    },
+    "pro": {
+        "monthly": os.getenv("STRIPE_PRICE_PRO_MONTHLY", ""),
+        "annual": os.getenv("STRIPE_PRICE_PRO_ANNUAL", ""),
+    },
+    "institutional": {
+        "monthly": os.getenv("STRIPE_PRICE_INSTITUTIONAL_MONTHLY", ""),
+        "annual": os.getenv("STRIPE_PRICE_INSTITUTIONAL_ANNUAL", ""),
+    },
+}
 
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
+
+# ─────────────────────────────────────────
+# TIER LEVELS for gating
+# ─────────────────────────────────────────
+TIER_LEVELS = {"free": 0, "essential": 1, "pro": 2, "institutional": 3}
 
 # ─────────────────────────────────────────
 # FIX 1.2: Database engine — support both SQLite (dev) and PostgreSQL (prod)
@@ -92,6 +112,7 @@ class User(Base):
     subscription_status = Column(String, default="inactive")
     stripe_customer_id = Column(String, nullable=True)
     stripe_subscription_id = Column(String, nullable=True)
+    tier = Column(String, default="free")
     alerts_enabled = Column(Boolean, default=False)
     last_alert_sent = Column(DateTime, nullable=True)
     access_token = Column(String, nullable=True, index=True)
@@ -267,9 +288,9 @@ class PerformanceEntryRequest(BaseModel):
     price_close: float
 
 class CheckoutRequest(BaseModel):
-    email: EmailStr = ""  # CHANGED
-    billing_cycle: str = "monthly"
-    annual: bool = False
+    email: Optional[str] = None
+    billing_cycle: str = "monthly"  # "monthly" or "annual"
+    tier: str = "pro"  # "essential", "pro", or "institutional"
 
 class AlertThresholdRequest(BaseModel):
     email: EmailStr  # CHANGED
@@ -406,6 +427,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─────────────────────────────────────────
+# STARTUP: Add tier column if it doesn't exist
+# ─────────────────────────────────────────
+@app.on_event("startup")
+def add_tier_column():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN tier VARCHAR DEFAULT 'free'"))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists
 
 # ─────────────────────────────────────────
 # CONSTANTS
@@ -543,21 +575,61 @@ def get_or_compute(cache_key: str, compute_fn, ttl: int = 120, *args, **kwargs):
 # ─────────────────────────────────────────
 TOKEN_EXPIRY_DAYS = 90
 
-def resolve_pro_status(authorization: Optional[str], db: Session) -> bool:
+# ─────────────────────────────────────────
+# AUTH HELPERS — Tier-aware
+# ─────────────────────────────────────────
+TOKEN_EXPIRY_DAYS = 90
+
+
+def resolve_user_tier(authorization: Optional[str], db: Session) -> dict:
+    """Returns {'is_pro': bool, 'tier': str, 'user': User|None}"""
     if not authorization or not authorization.startswith("Bearer "):
-        return False
+        return {"is_pro": False, "tier": "free", "user": None}
+
     token = authorization.replace("Bearer ", "").strip()
     if not token or len(token) < 20:
-        return False
+        return {"is_pro": False, "tier": "free", "user": None}
+
     user = db.query(User).filter(User.access_token == token).first()
     if not user:
-        return False
-    # FIX 1.3: Token expiry check
+        return {"is_pro": False, "tier": "free", "user": None}
+
+    # Token expiry check
     if user.token_created_at:
         age = (datetime.datetime.utcnow() - user.token_created_at).days
         if age > TOKEN_EXPIRY_DAYS:
-            return False
-    return user.subscription_status == "active"
+            return {"is_pro": False, "tier": "free", "user": user}
+
+    if user.subscription_status not in ("active", "trialing"):
+        return {"is_pro": False, "tier": "free", "user": user}
+
+    tier = user.tier or "free"
+    return {
+        "is_pro": tier in ("essential", "pro", "institutional"),
+        "tier": tier,
+        "user": user,
+    }
+
+
+def resolve_pro_status(authorization: Optional[str], db: Session) -> bool:
+    """Legacy helper — returns True if user has any paid tier."""
+    info = resolve_user_tier(authorization, db)
+    return info["is_pro"]
+
+
+def require_tier(authorization: str, db: Session, minimum_tier: str = "essential") -> dict:
+    """Checks user has at least the specified tier. Raises 403 if not."""
+    user_info = resolve_user_tier(authorization, db)
+    user_level = TIER_LEVELS.get(user_info["tier"], 0)
+    required_level = TIER_LEVELS.get(minimum_tier, 0)
+
+    if user_level < required_level:
+        raise HTTPException(
+            status_code=403,
+            detail=f"This feature requires {minimum_tier} tier or higher. Your tier: {user_info['tier']}"
+        )
+
+    return user_info
 
 
 def get_auth_header(request: Request) -> Optional[str]:
@@ -3698,14 +3770,60 @@ def health():
 
 
 # ── Pricing Info ─────────────────────────────
-@app.get("/pricing-info")
 def pricing_info():
     return {
-        "monthly": {"price": PRICE_MONTHLY, "currency": "USD", "label": "$39 / month", "period": "month"},
-        "annual": {
-            "price": PRICE_ANNUAL, "currency": "USD", "label": "$348 / year", "period": "year",
-            "saving": (PRICE_MONTHLY * 12) - PRICE_ANNUAL,
-            "saving_pct": round(((PRICE_MONTHLY * 12 - PRICE_ANNUAL) / (PRICE_MONTHLY * 12)) * 100, 1),
+        "tiers": {
+            "essential": {
+                "monthly": 39,
+                "annual": 348,
+                "label": "Essential",
+                "features": [
+                    "Multi-timeframe regime stack",
+                    "Exposure recommendation %",
+                    "Shift risk & hazard rate",
+                    "Survival probability & curve",
+                    "Decision Engine directives",
+                    "If You Do Nothing simulator",
+                    "Volatility environment",
+                    "Transition matrix",
+                    "Portfolio allocator",
+                    "Exposure logger & discipline score",
+                    "Performance comparison",
+                    "Edge profile & mistake replay",
+                    "Correlation monitor",
+                    "Daily morning brief email",
+                ],
+            },
+            "pro": {
+                "monthly": 79,
+                "annual": 708,
+                "label": "Pro",
+                "features": [
+                    "Everything in Essential",
+                    "Setup Quality & entry timing",
+                    "Probabilistic scenarios",
+                    "Internal damage monitor",
+                    "Behavioral alpha leak detection",
+                    "Trade plan generator",
+                    "Historical analogs",
+                    "Opportunity ranking",
+                    "Event risk overlay",
+                    "What Changed intelligence brief",
+                    "Dynamic alert evaluation",
+                ],
+            },
+            "institutional": {
+                "monthly": 149,
+                "annual": 1308,
+                "label": "Institutional",
+                "features": [
+                    "Everything in Pro",
+                    "Trader archetype overlay (full customization)",
+                    "Custom per-coin alert thresholds",
+                    "Priority support",
+                    "Future: REST API access",
+                ],
+            },
         },
         "free_tier": {
             "includes": [
@@ -3714,28 +3832,9 @@ def pricing_info():
                 "Basic market breadth (label only)",
                 "Risk events calendar",
             ],
-            "excludes": [
-                "Macro and Trend regime labels",
-                "Alignment %",
-                "Exposure recommendation %",
-                "Shift risk %", "Hazard rate",
-                "Survival probability",
-                "Decision Engine", "If You Do Nothing simulator",
-                "Stress meter and countdown timer",
-                "Portfolio allocator",
-                "Exposure logger and discipline score",
-                "Performance comparison", "Edge profile and mistake replay",
-                "Risk profile calibration", "Full correlation matrix",
-                "Email alerts and briefs",
-                "Setup Quality", "Scenarios", "Internal Damage",
-                "Behavioral Alpha", "Trade Plans", "Archetype Overlay",
-            ],
         },
-        "pro_tier": {
-            "includes": ["Everything in Free plus all excluded features above"],
-        },
+        "currency": "USD",
     }
-
 
 # ── Update ──────────────────────────────────
 @app.get("/update-now")
@@ -3918,8 +4017,8 @@ def regime_history(coin: str = "BTC", timeframe: str = "1h", limit: int = 48, db
 # ── Survival Curve (PRO) ─────────────────────
 @app.get("/survival-curve")
 def survival_curve(request: Request, coin: str = "BTC", timeframe: str = "1h", db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     start = time.perf_counter()
 
     cache_key = f"survival:{coin}:{timeframe}"
@@ -3956,8 +4055,8 @@ def survival_curve(request: Request, coin: str = "BTC", timeframe: str = "1h", d
 def regime_transitions(request: Request, coin: str = "BTC", timeframe: str = "1h", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
 
     result = get_or_compute(f"transitions:{coin}:{timeframe}", regime_transition_matrix, ttl=300, db=db, coin=coin, timeframe=timeframe)
     if result is None:
@@ -3970,8 +4069,8 @@ def regime_transitions(request: Request, coin: str = "BTC", timeframe: str = "1h
 def volatility_env(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     result = get_or_compute(f"volatility:{coin}", volatility_environment, ttl=120, coin=coin, db=db)
     if result is None:
         return {"error": "Insufficient data"}
@@ -3982,8 +4081,8 @@ def volatility_env(request: Request, coin: str = "BTC", db: Session = Depends(ge
 @app.get("/correlation")
 @app.get("/correlation-matrix")
 def correlation_endpoint(request: Request, coins: str = "BTC,ETH,SOL", db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     coin_list = [c.strip().upper() for c in coins.split(",") if c.strip()]
     sorted_key = ",".join(sorted(coin_list))
     return get_or_compute(f"correlation:{sorted_key}", build_correlation_matrix, ttl=300, coins=coin_list)
@@ -3994,8 +4093,8 @@ def correlation_endpoint(request: Request, coins: str = "BTC,ETH,SOL", db: Sessi
 def regime_confidence_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
 
     stack = build_regime_stack(coin, db)
     breadth = compute_market_breadth(db)
@@ -4015,8 +4114,8 @@ def regime_confidence_endpoint(request: Request, coin: str = "BTC", db: Session 
 def regime_quality_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     update_last_active(request, db)
 
     stack = get_or_compute(f"stack:{coin}", build_regime_stack, ttl=60, coin=coin, db=db)
@@ -4066,8 +4165,8 @@ def portfolio_allocator_endpoint(request: Request, account_size: float = 10000, 
         raise HTTPException(status_code=400, detail="Invalid strategy mode")
     if account_size <= 0:
         raise HTTPException(status_code=400, detail="Invalid account size")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     update_last_active(request, db)
 
     stack = build_regime_stack(coin, db)
@@ -4092,8 +4191,8 @@ def risk_events():
 def decision_engine_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     update_last_active(request, db)
 
     cache_key = f"decision:{coin}"
@@ -4129,8 +4228,8 @@ def decision_engine_endpoint(request: Request, coin: str = "BTC", db: Session = 
 def if_nothing_panel_endpoint(request: Request, coin: str = "BTC", user_exposure: float = 50.0, db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
@@ -4142,8 +4241,8 @@ def if_nothing_panel_endpoint(request: Request, coin: str = "BTC", user_exposure
 # ── User Profile (PRO) ───────────────────────
 @app.post("/user-profile")
 def save_user_profile(request: Request, body: UserProfileRequest, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = body.email.strip().lower()
     mult_map = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
     risk_mult = mult_map.get(body.risk_identity, 1.0)
@@ -4166,8 +4265,8 @@ def save_user_profile(request: Request, body: UserProfileRequest, db: Session = 
 
 @app.get("/user-profile")
 def get_user_profile(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = email.strip().lower()
     profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
@@ -4189,8 +4288,8 @@ def get_user_profile(request: Request, email: str, coin: str = "BTC", db: Sessio
 # ── Exposure Logger (PRO) ────────────────────
 @app.post("/log-exposure")
 def log_exposure(request: Request, body: ExposureLogRequest, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = body.email.strip().lower()
     if body.coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
@@ -4238,8 +4337,8 @@ def log_exposure(request: Request, body: ExposureLogRequest, db: Session = Depen
 # ── Discipline Score (PRO) ───────────────────
 @app.get("/discipline-score")
 def discipline_score_endpoint(request: Request, email: str, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     update_last_active(request, db)
     email = email.strip().lower()
     logs = db.query(ExposureLog).filter(ExposureLog.email == email).order_by(ExposureLog.created_at.desc()).limit(30).all()
@@ -4251,8 +4350,8 @@ def discipline_score_endpoint(request: Request, email: str, db: Session = Depend
 # ── Performance Comparison (PRO) ─────────────
 @app.get("/performance-comparison")
 def performance_comparison_endpoint(request: Request, email: str, coin: str = "BTC", limit: int = 30, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = email.strip().lower()
     entries = db.query(PerformanceEntry).filter(PerformanceEntry.email == email, PerformanceEntry.coin == coin).order_by(PerformanceEntry.date.asc()).limit(limit).all()
     result = compute_performance_comparison(entries)
@@ -4264,8 +4363,8 @@ def performance_comparison_endpoint(request: Request, email: str, coin: str = "B
 # ── Log Performance (PRO) ────────────────────
 @app.post("/log-performance")
 def log_performance(request: Request, body: PerformanceEntryRequest, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = body.email.strip().lower()
     if body.coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
@@ -4309,8 +4408,8 @@ def log_performance(request: Request, body: PerformanceEntryRequest, db: Session
 # ── Mistake Replay (PRO) ─────────────────────
 @app.get("/mistake-replay")
 def mistake_replay_endpoint(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = email.strip().lower()
     logs = db.query(ExposureLog).filter(ExposureLog.email == email, ExposureLog.coin == coin).order_by(ExposureLog.created_at.desc()).limit(50).all()
     replays = compute_mistake_replay(logs, db, coin)
@@ -4320,8 +4419,8 @@ def mistake_replay_endpoint(request: Request, email: str, coin: str = "BTC", db:
 # ── Edge Profile (PRO) ───────────────────────
 @app.get("/edge-profile")
 def edge_profile_endpoint(request: Request, email: str, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = email.strip().lower()
     entries = db.query(PerformanceEntry).filter(PerformanceEntry.email == email).order_by(PerformanceEntry.date.asc()).all()
 
@@ -4371,8 +4470,8 @@ def edge_profile_endpoint(request: Request, email: str, db: Session = Depends(ge
 # ── Full Accountability (PRO) ────────────────
 @app.get("/full-accountability")
 def full_accountability(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="essential")
     email = email.strip().lower()
 
     logs = db.query(ExposureLog).filter(ExposureLog.email == email).order_by(ExposureLog.created_at.desc()).limit(50).all()
@@ -4434,51 +4533,92 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     event_type = event["type"]
     data = event["data"]["object"]
 
+    # ── CHECKOUT COMPLETED ──
     if event_type == "checkout.session.completed":
-        customer_email = data.get("customer_details", {}).get("email")
+        customer_email = data.get("customer_details", {}).get("email") or data.get("customer_email")
         customer_id = data.get("customer")
         subscription_id = data.get("subscription")
+        tier = data.get("metadata", {}).get("tier", "pro")  # DEFAULT TO PRO
 
         if customer_email:
-            user = db.query(User).filter(User.email == customer_email).first()
+            email = customer_email.strip().lower()
+            user = db.query(User).filter(User.email == email).first()
             if not user:
-                user = User(email=customer_email)
+                user = User(email=email)
                 db.add(user)
 
             access_token = str(uuid.uuid4())
             user.subscription_status = "active"
+            user.tier = tier  # Save the tier
             user.stripe_customer_id = customer_id
             user.stripe_subscription_id = subscription_id
             user.alerts_enabled = True
             user.access_token = access_token
-            # FIX 1.3: Track token creation time for expiry
             user.token_created_at = datetime.datetime.utcnow()
-            # FIX 2.3: Track trial start for onboarding drip
             user.trial_start_date = datetime.datetime.utcnow()
             user.onboarding_step = 0
             db.commit()
 
             send_email(
-                customer_email,
+                email,
                 "Welcome to ChainPulse Pro — Your Access Link",
-                welcome_email_html(customer_email, access_token),
+                welcome_email_html(email, access_token),
             )
-            logger.info(f"Pro activated: {customer_email}")
+            logger.info(f"Activated {email} on {tier} tier")
 
+    # ── SUBSCRIPTION UPDATED (upgrade/downgrade) ──
+    elif event_type == "customer.subscription.updated":
+        subscription = data
+        sub_id = subscription.get("id")
+        customer_id = subscription.get("customer")
+        status = subscription.get("status")  # active, past_due, canceled, etc.
+
+        # Get tier from subscription metadata
+        tier = subscription.get("metadata", {}).get("tier", "pro")
+
+        user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
+        if not user:
+            user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
+
+        if user:
+            if status in ("active", "trialing"):
+                user.subscription_status = "active"
+                user.tier = tier
+                if not user.access_token:
+                    user.access_token = str(uuid.uuid4())
+                    user.token_created_at = datetime.datetime.utcnow()
+            else:
+                user.subscription_status = "inactive"
+            db.commit()
+            logger.info(f"Updated {user.email}: status={status}, tier={tier}")
+
+    # ── SUBSCRIPTION DELETED (canceled) ──
     elif event_type in ("customer.subscription.deleted", "customer.subscription.paused"):
         sub_id = data.get("id")
+        customer_id = data.get("customer")
+
         user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
+        if not user:
+            user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
+
         if user:
-            user.subscription_status = "inactive"
+            user.subscription_status = "canceled"
+            user.tier = "free"
             user.access_token = None
             user.token_created_at = None
             db.commit()
-            logger.info(f"Subscription deactivated: {user.email}")
+            logger.info(f"Canceled {user.email}")
 
+    # ── INVOICE PAYMENT FAILED ──
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
+
         user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
         if user:
+            user.subscription_status = "past_due"
+            db.commit()
+            logger.info(f"Payment failed for {user.email}")
+
             send_email(
                 user.email,
                 "ChainPulse — Payment Failed",
@@ -4491,21 +4631,6 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 """,
             )
 
-    elif event_type == "customer.subscription.updated":
-        sub_id = data.get("id")
-        status = data.get("status")
-        user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
-        if user:
-            if status == "active":
-                user.subscription_status = "active"
-                if not user.access_token:
-                    user.access_token = str(uuid.uuid4())
-                    user.token_created_at = datetime.datetime.utcnow()
-            else:
-                user.subscription_status = "inactive"
-            db.commit()
-            logger.info(f"Subscription updated: {user.email} -> {status}")
-
     return {"status": "received"}
 
 
@@ -4514,37 +4639,54 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 def create_checkout_session(body: CheckoutRequest, db: Session = Depends(get_db)):
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Stripe not configured")
-    if not STRIPE_PRICE_ID:
-        raise HTTPException(status_code=500, detail="Stripe price ID not configured")
+
+    # Validate tier
+    if body.tier not in STRIPE_PRICE_MAP:
+        raise HTTPException(400, detail=f"Invalid tier: {body.tier}")
+
+    # Validate billing cycle
+    if body.billing_cycle not in ("monthly", "annual"):
+        raise HTTPException(400, detail=f"Invalid billing cycle: {body.billing_cycle}")
+
+    # Get the price ID
+    price_id = STRIPE_PRICE_MAP[body.tier][body.billing_cycle]
+    if not price_id:
+        raise HTTPException(400, detail=f"Price not configured for {body.tier}/{body.billing_cycle}")
 
     try:
-        customer_email = body.email.strip().lower() if body.email else None
-        existing_customer_id = None
+        # Find or create customer
+        customer_kwargs = {}
+        if body.email:
+            email = body.email.strip().lower()
+            user = db.query(User).filter(User.email == email).first()
 
-        if customer_email:
-            user = db.query(User).filter(User.email == customer_email).first()
             if user and user.stripe_customer_id:
-                existing_customer_id = user.stripe_customer_id
+                customer_kwargs["customer"] = user.stripe_customer_id
+            else:
+                customer_kwargs["customer_email"] = email
 
-        is_annual = body.billing_cycle == "annual" or body.annual
-        price_id = STRIPE_PRICE_ID_ANNUAL if is_annual and STRIPE_PRICE_ID_ANNUAL else STRIPE_PRICE_ID
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{
+                "price": price_id,
+                "quantity": 1,
+            }],
+            subscription_data={
+                "trial_period_days": 7,
+                "metadata": {
+                    "tier": body.tier,
+                },
+            },
+            metadata={
+                "tier": body.tier,
+            },
+            allow_promotion_codes=True,
+            success_url=f"{FRONTEND_URL}/app?success=true&tier={body.tier}",
+            cancel_url=f"{FRONTEND_URL}/pricing?cancelled=true",
+            **customer_kwargs,
+        )
 
-        session_params = {
-            "payment_method_types": ["card"],
-            "line_items": [{"price": price_id, "quantity": 1}],
-            "mode": "subscription",
-            "success_url": f"{FRONTEND_URL}/app?success=true",
-            "cancel_url": f"{FRONTEND_URL}/pricing?cancelled=true",
-            "allow_promotion_codes": True,
-            "subscription_data": {"trial_period_days": 7},
-        }
-
-        if existing_customer_id:
-            session_params["customer"] = existing_customer_id
-        elif customer_email:
-            session_params["customer_email"] = customer_email
-
-        session = stripe.checkout.Session.create(**session_params)
         return {"url": session.url, "session_id": session.id}
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error: {e}")
@@ -4635,8 +4777,12 @@ def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
 # ── User Status ──────────────────────────────
 @app.get("/user-status")
 def user_status(request: Request, db: Session = Depends(get_db)):
-    is_pro = resolve_pro_status(get_auth_header(request), db)
-    return {"is_pro": is_pro, "timestamp": datetime.datetime.utcnow()}
+    user_info = resolve_user_tier(get_auth_header(request), db)
+    return {
+        "is_pro": user_info["is_pro"],
+        "tier": user_info["tier"],
+        "timestamp": datetime.datetime.utcnow(),
+    }
 
 
 # ── Ticker ───────────────────────────────────
@@ -4842,6 +4988,10 @@ def dashboard(request: Request, coin: str = "BTC", db: Session = Depends(get_db)
 
     authorization = get_auth_header(request)
     is_pro = resolve_pro_status(authorization, db)
+    user_info = resolve_user_tier(authorization, db)
+    tier = user_info["tier"]
+    user_info = resolve_user_tier(authorization, db)
+    tier = user_info["tier"]
 
     stack_response = regime_stack_endpoint(request, coin, db)
     latest_data = latest(coin, db)
@@ -4879,6 +5029,8 @@ def dashboard(request: Request, coin: str = "BTC", db: Session = Depends(get_db)
 
     return {
         "stack": stack_response,
+        "pro_required": not is_pro,
+        "tier": tier,
         "latest": latest_data,
         "history": history_data.get("data") if history_data else [],
         "overview": overview_data.get("data") if overview_data else [],
@@ -4901,8 +5053,8 @@ def dashboard(request: Request, coin: str = "BTC", db: Session = Depends(get_db)
 def setup_quality_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     result = get_or_compute(f"setup_quality:{coin}", compute_setup_quality, ttl=120, coin=coin, db=db)
@@ -4912,8 +5064,8 @@ def setup_quality_endpoint(request: Request, coin: str = "BTC", db: Session = De
 # ── Opportunity Ranking ──────────────────────
 @app.get("/opportunity-ranking")
 def opportunity_ranking_endpoint(request: Request, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     result = get_or_compute("opportunity_ranking", compute_opportunity_ranking, ttl=180, db=db)
@@ -4925,8 +5077,8 @@ def opportunity_ranking_endpoint(request: Request, db: Session = Depends(get_db)
 def historical_analogs_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     cache_key = f"analogs:{coin}"
@@ -4954,8 +5106,8 @@ def historical_analogs_endpoint(request: Request, coin: str = "BTC", db: Session
 def scenarios_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     result = get_or_compute(f"scenarios:{coin}", compute_scenarios, ttl=120, coin=coin, db=db)
@@ -4967,8 +5119,8 @@ def scenarios_endpoint(request: Request, coin: str = "BTC", db: Session = Depend
 def internal_damage_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     result = get_or_compute(f"damage:{coin}", compute_internal_damage, ttl=120, coin=coin, db=db)
@@ -4980,8 +5132,8 @@ def internal_damage_endpoint(request: Request, coin: str = "BTC", db: Session = 
 def behavioral_alpha_endpoint(request: Request, email: str = "", lookback_days: int = 30, db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
     email = email.strip().lower()
     lookback_days = min(max(7, lookback_days), 90)
@@ -4997,8 +5149,8 @@ def trade_plan_endpoint(request: Request, body: TradePlanRequest, db: Session = 
         raise HTTPException(status_code=400, detail="Invalid account size")
     if body.strategy_mode not in ARCHETYPE_CONFIG:
         raise HTTPException(status_code=400, detail=f"Invalid strategy. Choose from: {list(ARCHETYPE_CONFIG.keys())}")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
     email = body.email.strip().lower()
     return compute_trade_plan(coin=body.coin, account_size=body.account_size, strategy_mode=body.strategy_mode, db=db, email=email)
@@ -5009,8 +5161,8 @@ def trade_plan_endpoint(request: Request, body: TradePlanRequest, db: Session = 
 def event_risk_overlay_endpoint(request: Request, coin: str = "BTC", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
 
     result = get_or_compute(f"event_risk:{coin}", compute_event_risk_overlay, ttl=300, coin=coin, db=db)
@@ -5024,8 +5176,8 @@ def archetype_overlay_endpoint(request: Request, coin: str = "BTC", archetype: s
         raise HTTPException(status_code=400, detail="Unsupported coin")
     if archetype not in ARCHETYPE_CONFIG:
         raise HTTPException(status_code=400, detail=f"Invalid archetype. Choose from: {list(ARCHETYPE_CONFIG.keys())}")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
     update_last_active(request, db)
     return apply_archetype_overlay(coin=coin, archetype=archetype, db=db, email=email.strip().lower() if email else None)
 
@@ -5033,8 +5185,8 @@ def archetype_overlay_endpoint(request: Request, coin: str = "BTC", archetype: s
 # ── What Changed Brief ───────────────────────
 @app.get("/what-changed")
 def what_changed_endpoint(request: Request, lookback_hours: int = 24, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
     lookback_hours = min(max(1, lookback_hours), 168)
     result = get_or_compute(f"what_changed:{lookback_hours}", compute_what_changed, ttl=120, db=db, lookback_hours=lookback_hours)
@@ -5044,8 +5196,8 @@ def what_changed_endpoint(request: Request, lookback_hours: int = 24, db: Sessio
 # ── Dynamic Alert Thresholds (CRUD) ──────────
 @app.post("/alert-thresholds")
 def save_alert_thresholds(request: Request, body: AlertThresholdRequest, db: Session = Depends(get_db)):
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
     email = body.email.strip().lower()
     existing = db.query(AlertThreshold).filter(AlertThreshold.email == email, AlertThreshold.coin == body.coin).first()
     if existing:
@@ -5064,8 +5216,8 @@ def save_alert_thresholds(request: Request, body: AlertThresholdRequest, db: Ses
 def get_alert_thresholds(request: Request, email: str = "", db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
     email = email.strip().lower()
     thresholds = db.query(AlertThreshold).filter(AlertThreshold.email == email).all()
     return {"email": email, "thresholds": [{"coin": t.coin, "shift_risk_threshold": t.shift_risk_threshold, "exposure_change_threshold": t.exposure_change_threshold, "setup_quality_threshold": t.setup_quality_threshold, "regime_quality_threshold": t.regime_quality_threshold, "enabled": t.enabled} for t in thresholds]}
@@ -5076,8 +5228,8 @@ def get_alert_thresholds(request: Request, email: str = "", db: Session = Depend
 def evaluate_alerts_endpoint(request: Request, email: str = "", db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
     email = email.strip().lower()
     alerts = evaluate_dynamic_alerts(email, db)
@@ -5172,8 +5324,11 @@ def save_archetype_endpoint(request: Request, body: TraderArchetype, db: Session
 def premium_dashboard(request: Request, coin: str = "BTC", email: str = "", db: Session = Depends(get_db)):
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
+    auth = get_auth_header(request)
+    user_info = resolve_user_tier(auth, db)
+    if not user_info["is_pro"]:
+        raise HTTPException(status_code=403, detail="Paid subscription required.")
+    tier = user_info["tier"]
     update_last_active(request, db)
 
     start = time.perf_counter()
@@ -5310,6 +5465,7 @@ def premium_dashboard(request: Request, coin: str = "BTC", email: str = "", db: 
             "direction": stack.get("direction"), "exposure": stack.get("exposure"),
             "shift_risk": stack.get("shift_risk"), "survival": stack.get("survival"),
             "hazard": stack.get("hazard"), "incomplete": stack.get("incomplete", False),
+            "pro_required": False, "tier": tier,
         },
         "quality": quality, "setup": setup, "decision": decision,
         "scenarios": scenarios, "damage": damage, "event_risk": event_risk,
@@ -5556,6 +5712,8 @@ def dashboard_v2(request: Request, coin: str = "BTC", email: str = "", db: Sessi
 
     authorization = get_auth_header(request)
     is_pro = resolve_pro_status(authorization, db)
+    user_info = resolve_user_tier(authorization, db)
+    tier = user_info["tier"]
     email = email.strip().lower() if email else ""
 
     # ── Core (Free) ──
@@ -5573,7 +5731,7 @@ def dashboard_v2(request: Request, coin: str = "BTC", email: str = "", db: Sessi
         "stack": stack_response, "latest": latest_data, "history": history_data,
         "overview": overview_data.get("data") if overview_data else [],
         "breadth": overview_data.get("breadth") if overview_data else None,
-        "events": events_data, "is_pro": is_pro,
+        "events": events_data, "is_pro": is_pro, "tier": tier,
     }
 
     if not is_pro:
