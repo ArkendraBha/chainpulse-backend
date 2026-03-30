@@ -4837,7 +4837,12 @@ def send_alerts(secret: str = "", db: Session = Depends(get_db)):
     if secret != UPDATE_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized")
 
-    pro_users = db.query(User).filter(User.subscription_status == "active", User.alerts_enabled == True).all()
+    pro_users = db.query(User).filter(
+        User.subscription_status == "active",
+        User.alerts_enabled == True,
+        User.tier.in_(["essential", "pro", "institutional"])
+    ).all()
+
     sent = 0
     for coin in SUPPORTED_COINS:
         stack = build_regime_stack(coin, db)
@@ -4846,12 +4851,27 @@ def send_alerts(secret: str = "", db: Session = Depends(get_db)):
         if (stack.get("shift_risk") or 0) < 70:
             continue
         quality = compute_regime_quality(stack)
+
         for user in pro_users:
+            # ── Priority delivery by tier ──
+            if user.tier == "institutional":
+                min_hours = 2
+            elif user.tier == "pro":
+                min_hours = 6
+            else:  # essential
+                min_hours = 12
+
             if user.last_alert_sent:
                 hrs = (datetime.datetime.utcnow() - user.last_alert_sent).total_seconds() / 3600
-                if hrs < 12:
+                if hrs < min_hours:
                     continue
-            send_email(user.email, f"ChainPulse Alert — {coin} Regime Shift Risk Elevated", regime_alert_html(coin, stack, quality))
+
+            subject_prefix = "⚡ Priority: " if user.tier == "institutional" else ""
+            send_email(
+                user.email,
+                f"{subject_prefix}ChainPulse Alert — {coin} Regime Shift Risk Elevated",
+                regime_alert_html(coin, stack, quality),
+            )
             user.last_alert_sent = datetime.datetime.utcnow()
             db.commit()
             sent += 1
@@ -5242,25 +5262,54 @@ def send_dynamic_alerts(secret: str = "", db: Session = Depends(get_db)):
     if secret != UPDATE_SECRET:
         raise HTTPException(status_code=403, detail="Unauthorized")
 
-    pro_users = db.query(User).filter(User.subscription_status == "active", User.alerts_enabled == True).all()
+    pro_users = db.query(User).filter(
+        User.subscription_status == "active",
+        User.alerts_enabled == True,
+        User.tier.in_(["essential", "pro", "institutional"])
+    ).all()
+
     sent = 0
     errors = 0
 
     for user in pro_users:
         try:
+            # ── Priority alert delivery by tier ──
+            if user.tier == "institutional":
+                min_hours_between_alerts = 1    # Fastest: every hour
+            elif user.tier == "pro":
+                min_hours_between_alerts = 4    # Every 4 hours
+            else:  # essential
+                min_hours_between_alerts = 8    # Every 8 hours
+
             if user.last_alert_sent:
                 hrs = (datetime.datetime.utcnow() - user.last_alert_sent).total_seconds() / 3600
-                if hrs < 6:
+                if hrs < min_hours_between_alerts:
                     continue
 
             alerts = evaluate_dynamic_alerts(user.email, db)
-            high_alerts = [a for a in alerts if a.get("severity") == "high"]
-            if not high_alerts:
+
+            # ── Tier-based alert severity filtering ──
+            # Institutional: get all alerts (high + medium)
+            # Pro: get high + medium
+            # Essential: get high only
+            if user.tier == "institutional":
+                filtered_alerts = [a for a in alerts if a.get("severity") in ("high", "medium", "positive")]
+            elif user.tier == "pro":
+                filtered_alerts = [a for a in alerts if a.get("severity") in ("high", "medium")]
+            else:  # essential
+                filtered_alerts = [a for a in alerts if a.get("severity") == "high"]
+
+            if not filtered_alerts:
                 continue
 
+            # ── Priority badge for institutional ──
+            priority_badge = ""
+            if user.tier == "institutional":
+                priority_badge = '<div style="display:inline-block;background:#8b5cf6;color:#fff;padding:4px 12px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;">Priority Alert</div>'
+
             alerts_html = ""
-            for alert in high_alerts[:5]:
-                color = "#f87171" if alert["severity"] == "high" else "#facc15"
+            for alert in filtered_alerts[:8]:  # Institutional gets up to 8, others capped below
+                color = "#f87171" if alert["severity"] == "high" else "#facc15" if alert["severity"] == "medium" else "#4ade80"
                 alerts_html += f"""
                 <div style="border:1px solid {color};padding:16px;margin-bottom:12px;border-radius:8px;">
                     <div style="color:{color};font-weight:600;font-size:14px;">{alert.get('coin', '')} — {alert.get('type', '').replace('_', ' ').title()}</div>
@@ -5269,16 +5318,36 @@ def send_dynamic_alerts(secret: str = "", db: Session = Depends(get_db)):
                 </div>
                 """
 
+            # Cap alerts shown by tier
+            if user.tier == "essential":
+                max_alerts_shown = 3
+            elif user.tier == "pro":
+                max_alerts_shown = 5
+            else:  # institutional
+                max_alerts_shown = 8
+
+            alert_count = min(len(filtered_alerts), max_alerts_shown)
+            remaining = len(filtered_alerts) - alert_count
+            remaining_note = f'<p style="color:#666;font-size:12px;margin-top:8px;">+ {remaining} more alerts on your dashboard</p>' if remaining > 0 else ""
+
+            tier_label = user.tier.title() if user.tier else "Pro"
+
             email_html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#000;color:#fff;padding:40px;">
-  <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">ChainPulse Dynamic Alert</div>
-  <h2 style="color:#f87171;margin-bottom:24px;">{len(high_alerts)} High-Priority Alert{"s" if len(high_alerts) > 1 else ""}</h2>
+  <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">ChainPulse {tier_label} Alert</div>
+  {priority_badge}
+  <h2 style="color:#f87171;margin-bottom:24px;">{alert_count} Alert{"s" if alert_count > 1 else ""}</h2>
   {alerts_html}
+  {remaining_note}
   <a href="{FRONTEND_URL}/app?token={user.access_token or ''}" style="display:inline-block;background:#fff;color:#000;padding:14px 28px;margin-top:24px;text-decoration:none;font-weight:bold;border-radius:4px;">Open Dashboard</a>
   <p style="color:#333;font-size:11px;margin-top:40px;border-top:1px solid #111;padding-top:20px;">ChainPulse. Not financial advice.</p>
 </div>
 """
-            send_email(user.email, f"ChainPulse Alert — {len(high_alerts)} High Priority", email_html)
+            send_email(
+                user.email,
+                f"ChainPulse {'⚡ Priority' if user.tier == 'institutional' else ''} Alert — {alert_count} {'High Priority' if any(a['severity'] == 'high' for a in filtered_alerts) else 'Active'}",
+                email_html,
+            )
             user.last_alert_sent = datetime.datetime.utcnow()
             db.commit()
             sent += 1
@@ -5642,13 +5711,29 @@ def run_full_update(db_factory):
 
             for user in pro_users:
                 try:
+                    # ── Priority delivery by tier ──
+                    if user.tier == "institutional":
+                        min_hours = 1
+                    elif user.tier == "pro":
+                        min_hours = 4
+                    else:  # essential
+                        min_hours = 8
+
                     if user.last_alert_sent:
                         hrs = (datetime.datetime.utcnow() - user.last_alert_sent).total_seconds() / 3600
-                        if hrs < 6:
+                        if hrs < min_hours:
                             continue
 
                     alerts = evaluate_dynamic_alerts(user.email, db)
-                    high_alerts = [a for a in alerts if a.get("severity") == "high"]
+
+                    # Filter by tier
+                    if user.tier == "institutional":
+                        high_alerts = [a for a in alerts if a.get("severity") in ("high", "medium", "positive")]
+                    elif user.tier == "pro":
+                        high_alerts = [a for a in alerts if a.get("severity") in ("high", "medium")]
+                    else:
+                        high_alerts = [a for a in alerts if a.get("severity") == "high"]
+
                     if not high_alerts:
                         continue
 
@@ -5657,13 +5742,15 @@ def run_full_update(db_factory):
                         alert_lines.append(f"• {a.get('coin', '')} — {a.get('message', '')}")
                     alert_text = "<br>".join(alert_lines)
 
+                    priority_prefix = "⚡ Priority " if user.tier == "institutional" else ""
+
                     send_email(
                         user.email,
-                        f"ChainPulse — {len(high_alerts)} Alert{'s' if len(high_alerts) > 1 else ''}",
+                        f"ChainPulse — {priority_prefix}{len(high_alerts)} Alert{'s' if len(high_alerts) > 1 else ''}",
                         f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#000;color:#fff;padding:40px;">
   <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">ChainPulse Alert</div>
-  <h2 style="color:#f87171;margin-bottom:24px;">{len(high_alerts)} High-Priority Alert{'s' if len(high_alerts) > 1 else ''}</h2>
+  <h2 style="color:#f87171;margin-bottom:24px;">{priority_prefix}{len(high_alerts)} Alert{'s' if len(high_alerts) > 1 else ''}</h2>
   <div style="color:#ccc;font-size:14px;line-height:2;">{alert_text}</div>
   <a href="{FRONTEND_URL}/app?token={user.access_token or ''}" style="display:inline-block;background:#fff;color:#000;padding:14px 28px;margin-top:24px;text-decoration:none;font-weight:bold;border-radius:4px;">Open Dashboard</a>
   <p style="color:#333;font-size:11px;margin-top:40px;">ChainPulse. Not financial advice.</p>
