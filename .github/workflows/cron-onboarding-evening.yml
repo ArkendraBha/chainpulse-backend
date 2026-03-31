@@ -1,0 +1,14 @@
+name: Evening — Onboarding Drip (2nd run)
+
+on:
+  schedule:
+    - cron: '0 20 * * *'  # Every day at 8pm UTC (12h after morning)
+  workflow_dispatch:
+
+jobs:
+  evening-onboarding:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Onboarding Drip
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-onboarding-drip?secret=${{ secrets.UPDATE_SECRET }}" || echo "onboarding-drip failed"
