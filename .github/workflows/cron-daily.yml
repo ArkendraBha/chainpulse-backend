@@ -1,0 +1,18 @@
+name: Daily — Morning Email & Onboarding
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Every day at 8am UTC
+  workflow_dispatch:
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Morning Email
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-morning-email?secret=${{ secrets.UPDATE_SECRET }}" || echo "morning-email failed"
+
+      - name: Send Onboarding Drip
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-onboarding-drip?secret=${{ secrets.UPDATE_SECRET }}" || echo "onboarding-drip failed"
