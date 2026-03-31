@@ -9,3 +9,4 @@ apscheduler
 resend
 redis
 pydantic[email]
+psycopg2-binary
