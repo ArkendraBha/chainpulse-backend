@@ -1,0 +1,14 @@
+name: Every 3 Days — What Changed Brief
+
+on:
+  schedule:
+    - cron: '0 10 */3 * *'  # Every 3 days at 10am UTC
+  workflow_dispatch:
+
+jobs:
+  what-changed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send What Changed
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-what-changed?secret=${{ secrets.UPDATE_SECRET }}" || echo "what-changed failed"
