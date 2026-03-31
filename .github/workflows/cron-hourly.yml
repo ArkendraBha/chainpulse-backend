@@ -1,0 +1,25 @@
+name: Hourly — Update & Alerts
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Every hour
+  workflow_dispatch:
+
+jobs:
+  hourly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update All Coins
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/cron-all?secret=${{ secrets.UPDATE_SECRET }}" || echo "cron-all failed"
+
+      - name: Wait for updates to process
+        run: sleep 30
+
+      - name: Send Dynamic Alerts
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-dynamic-alerts?secret=${{ secrets.UPDATE_SECRET }}" || echo "dynamic-alerts failed"
+
+      - name: Send Shift Alerts
+        run: |
+          curl -sf "https://chainpulse-backend-2xok.onrender.com/send-alerts?secret=${{ secrets.UPDATE_SECRET }}" || echo "shift-alerts failed"
