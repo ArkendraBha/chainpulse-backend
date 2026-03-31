@@ -73,11 +73,17 @@ TIER_LEVELS = {"free": 0, "essential": 1, "pro": 2, "institutional": 3}
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
+    # Support Neon and other serverless PostgreSQL
+    connect_args = {}
+    if "neon.tech" in DATABASE_URL:
+        connect_args = {"sslmode": "require"}
+    
     engine = create_engine(
         DATABASE_URL,
-        pool_size=10,
-        max_overflow=20,
+        pool_size=5,
+        max_overflow=10,
         pool_pre_ping=True,
+        connect_args=connect_args,
     )
 
 SessionLocal = sessionmaker(bind=engine)
