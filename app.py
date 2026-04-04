@@ -257,6 +257,49 @@ class TradePlan(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, index=True)
+    key = Column(String, unique=True, index=True)
+    label = Column(String, default="default")
+    is_active = Column(Boolean, default=True)
+    tier = Column(String, default="institutional")
+    requests_today = Column(Integer, default=0)
+    last_request_date = Column(String, nullable=True)  # "YYYY-MM-DD"
+    daily_limit = Column(Integer, default=1000)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+
+class WebhookEndpoint(Base):
+    __tablename__ = "webhook_endpoints"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, index=True)
+    url = Column(String)
+    secret = Column(String, nullable=True)  # HMAC signing secret
+    events = Column(String, default="regime_change,shift_risk_alert,setup_quality_alert")
+    is_active = Column(Boolean, default=True)
+    last_triggered_at = Column(DateTime, nullable=True)
+    failure_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        Index('ix_webhook_delivery_endpoint_created', 'endpoint_id', 'created_at'),
+    )
+    id = Column(Integer, primary_key=True)
+    endpoint_id = Column(Integer, index=True)
+    event_type = Column(String)
+    payload = Column(String)  # JSON string
+    response_status = Column(Integer, nullable=True)
+    response_body = Column(String, nullable=True)
+    success = Column(Boolean, default=False)
+    attempt = Column(Integer, default=1)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 class IntelligenceBrief(Base):
     __tablename__ = "intelligence_briefs"
     id = Column(Integer, primary_key=True)
@@ -322,6 +365,25 @@ class TraderArchetype(BaseModel):
 
 class RestoreRequest(BaseModel):
     email: EmailStr  # CHANGED
+
+class ApiKeyRequest(BaseModel):
+    email: EmailStr
+    label: str = "default"
+
+
+class WebhookCreateRequest(BaseModel):
+    email: EmailStr
+    url: str
+    secret: Optional[str] = None
+    events: str = "regime_change,shift_risk_alert,setup_quality_alert"
+
+
+class WebhookUpdateRequest(BaseModel):
+    email: EmailStr
+    webhook_id: int
+    url: Optional[str] = None
+    events: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 # ─────────────────────────────────────────
@@ -440,10 +502,27 @@ app.add_middleware(
 def add_tier_column():
     try:
         with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE users ADD COLUMN tier VARCHAR DEFAULT 'free'"))
+            # Add tier column if it doesn't exist
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN tier VARCHAR DEFAULT 'free'"))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
+
+            # Backfill: any active user without a tier gets "pro" (legacy subscribers)
+            conn.execute(text("""
+                UPDATE users 
+                SET tier = 'pro' 
+                WHERE subscription_status = 'active' 
+                AND (tier IS NULL OR tier = '' OR tier = 'free')
+            """))
             conn.commit()
-    except Exception:
-        pass  # Column already exists
+            logger.info("Backfilled existing active users to 'pro' tier")
+    except Exception as e:
+        logger.error(f"Tier migration error: {e}")
+
+    # Create new tables (api_keys, webhook_endpoints, webhook_deliveries)
+    Base.metadata.create_all(bind=engine)
 
 # ─────────────────────────────────────────
 # CONSTANTS
@@ -644,6 +723,174 @@ def get_auth_header(request: Request) -> Optional[str]:
         or request.headers.get("Authorization")
     )
 
+# ─────────────────────────────────────────
+# API KEY AUTH (Institutional)
+# ─────────────────────────────────────────
+def resolve_api_key(request: Request, db: Session) -> Optional[dict]:
+    """
+    Checks for API key in X-API-Key header or ?api_key= query param.
+    Returns {'email': str, 'tier': str, 'api_key_id': int} or None.
+    """
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("x-api-key")
+        or request.query_params.get("api_key")
+    )
+
+    if not api_key or len(api_key) < 20:
+        return None
+
+    key_record = db.query(ApiKey).filter(
+        ApiKey.key == api_key,
+        ApiKey.is_active == True,
+    ).first()
+
+    if not key_record:
+        return None
+
+    # Check daily rate limit
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    if key_record.last_request_date != today:
+        key_record.requests_today = 0
+        key_record.last_request_date = today
+
+    if key_record.requests_today >= key_record.daily_limit:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily API limit reached ({key_record.daily_limit} requests/day). Resets at midnight UTC."
+        )
+
+    # Increment counter
+    key_record.requests_today += 1
+    key_record.last_used_at = datetime.datetime.utcnow()
+    db.commit()
+
+    # Verify the user is still institutional
+    user = db.query(User).filter(User.email == key_record.email).first()
+    if not user or user.subscription_status != "active" or user.tier != "institutional":
+        return None
+
+    return {
+        "email": key_record.email,
+        "tier": user.tier,
+        "api_key_id": key_record.id,
+        "requests_remaining": key_record.daily_limit - key_record.requests_today,
+    }
+
+
+def require_api_key(request: Request, db: Session) -> dict:
+    """Requires valid API key. Raises 401/403 if invalid."""
+    result = resolve_api_key(request, db)
+    if not result:
+        raise HTTPException(
+            status_code=401,
+            detail="Valid API key required. Get yours at /api/v1/keys"
+        )
+    return result
+
+# ─────────────────────────────────────────
+# WEBHOOK DELIVERY ENGINE
+# ─────────────────────────────────────────
+import hashlib
+import hmac as hmac_lib
+
+
+def sign_webhook_payload(payload_str: str, secret: str) -> str:
+    """Creates HMAC-SHA256 signature for webhook payload."""
+    return hmac_lib.new(
+        secret.encode("utf-8"),
+        payload_str.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def deliver_webhook(endpoint: WebhookEndpoint, event_type: str, payload: dict, db: Session) -> bool:
+    """Delivers a webhook to an endpoint. Returns True on success."""
+    payload_str = json.dumps(payload)
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "ChainPulse-Webhook/1.0",
+        "X-ChainPulse-Event": event_type,
+        "X-ChainPulse-Timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+    # Sign payload if secret is configured
+    if endpoint.secret:
+        signature = sign_webhook_payload(payload_str, endpoint.secret)
+        headers["X-ChainPulse-Signature"] = f"sha256={signature}"
+
+    delivery = WebhookDelivery(
+        endpoint_id=endpoint.id,
+        event_type=event_type,
+        payload=payload_str,
+    )
+
+    try:
+        r = requests.post(
+            endpoint.url,
+            data=payload_str,
+            headers=headers,
+            timeout=10,
+        )
+        delivery.response_status = r.status_code
+        delivery.response_body = r.text[:500] if r.text else None
+        delivery.success = 200 <= r.status_code < 300
+
+        if delivery.success:
+            endpoint.failure_count = 0
+        else:
+            endpoint.failure_count += 1
+
+    except Exception as e:
+        delivery.response_status = 0
+        delivery.response_body = str(e)[:500]
+        delivery.success = False
+        endpoint.failure_count += 1
+        logger.error(f"Webhook delivery failed for {endpoint.url}: {e}")
+
+    endpoint.last_triggered_at = datetime.datetime.utcnow()
+    db.add(delivery)
+
+    # Auto-disable after 10 consecutive failures
+    if endpoint.failure_count >= 10:
+        endpoint.is_active = False
+        logger.warning(f"Webhook disabled after 10 failures: {endpoint.url}")
+
+    db.commit()
+    return delivery.success
+
+
+def trigger_webhooks(event_type: str, payload: dict, db: Session, coin: str = None):
+    """Triggers all active webhooks for a given event type."""
+    endpoints = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.is_active == True,
+    ).all()
+
+    sent = 0
+    for endpoint in endpoints:
+        # Check if endpoint subscribes to this event type
+        subscribed_events = [e.strip() for e in (endpoint.events or "").split(",")]
+        if event_type not in subscribed_events and "*" not in subscribed_events:
+            continue
+
+        # Verify user is still institutional
+        user = db.query(User).filter(User.email == endpoint.email).first()
+        if not user or user.tier != "institutional" or user.subscription_status != "active":
+            continue
+
+        # Add metadata to payload
+        full_payload = {
+            "event": event_type,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "coin": coin,
+            **payload,
+        }
+
+        deliver_webhook(endpoint, event_type, full_payload, db)
+        sent += 1
+
+    return sent
 
 # ─────────────────────────────────────────
 # User Activity Tracking
@@ -3826,8 +4073,13 @@ def pricing_info():
                     "Everything in Pro",
                     "Trader archetype overlay (full customization)",
                     "Custom per-coin alert thresholds",
-                    "Priority support",
-                    "Future: REST API access",
+                    "Priority alert delivery (1hr cooldown)",
+                    "REST API access (1,000 requests/day)",
+                    "Webhook delivery (regime changes, alerts, setup quality)",
+                    "Up to 3 API keys",
+                    "Up to 5 webhook endpoints",
+                    "HMAC-SHA256 webhook signatures",
+                    "Webhook delivery logs",
                 ],
             },
         },
@@ -5711,6 +5963,61 @@ def run_full_update(db_factory):
                 except Exception as e:
                     results["errors"].append(f"Update {coin}/{tf}: {str(e)}")
 
+                # 1.5 Trigger webhooks for regime changes
+        try:
+            for coin in SUPPORTED_COINS:
+                stack = build_regime_stack(coin, db)
+                if stack.get("incomplete"):
+                    continue
+
+                shift_risk = stack.get("shift_risk") or 0
+                hazard = stack.get("hazard") or 0
+                exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+
+                # Trigger regime_change webhook
+                regime_payload = {
+                    "coin": coin,
+                    "macro": stack["macro"]["label"] if stack.get("macro") else None,
+                    "trend": stack["trend"]["label"] if stack.get("trend") else None,
+                    "execution": exec_label,
+                    "alignment": stack.get("alignment"),
+                    "direction": stack.get("direction"),
+                    "exposure": stack.get("exposure"),
+                    "shift_risk": shift_risk,
+                    "hazard": hazard,
+                    "survival": stack.get("survival"),
+                }
+                trigger_webhooks("regime_change", regime_payload, db, coin=coin)
+
+                # Trigger shift_risk_alert if elevated
+                if shift_risk > 65:
+                    trigger_webhooks("shift_risk_alert", {
+                        "coin": coin,
+                        "shift_risk": shift_risk,
+                        "hazard": hazard,
+                        "regime": exec_label,
+                        "exposure": stack.get("exposure"),
+                        "message": f"{coin} shift risk elevated at {shift_risk}%",
+                    }, db, coin=coin)
+
+                # Trigger setup_quality_alert if good setup
+                try:
+                    setup = compute_setup_quality(coin, db, stack=stack)
+                    setup_score = setup.get("setup_quality_score") or 0
+                    if setup_score >= 70:
+                        trigger_webhooks("setup_quality_alert", {
+                            "coin": coin,
+                            "setup_score": setup_score,
+                            "setup_label": setup.get("setup_label"),
+                            "entry_mode": setup.get("entry_mode"),
+                            "chase_risk": setup.get("chase_risk"),
+                        }, db, coin=coin)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            results["errors"].append(f"Webhook dispatch: {str(e)}")
+
         # 2. Send dynamic alerts
         try:
             pro_users = db.query(User).filter(User.subscription_status == "active", User.alerts_enabled == True).all()
@@ -5980,3 +6287,450 @@ def dashboard_v2(request: Request, coin: str = "BTC", email: str = "", db: Sessi
 
     result["model_version"] = MODEL_VERSION
     return result
+
+# ═════════════════════════════════════════════════
+# API v1 — INSTITUTIONAL TIER
+# ═════════════════════════════════════════════════
+
+# ── API Key Management ───────────────────────
+@app.post("/api/v1/keys")
+def create_api_key(body: ApiKeyRequest, request: Request, db: Session = Depends(get_db)):
+    """Create a new API key. Requires Institutional tier."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+
+    email = body.email.strip().lower()
+
+    # Check existing keys (max 3 per user)
+    existing = db.query(ApiKey).filter(ApiKey.email == email, ApiKey.is_active == True).count()
+    if existing >= 3:
+        raise HTTPException(400, detail="Maximum 3 active API keys per account")
+
+    import secrets as secrets_mod
+    key = f"cp_live_{secrets_mod.token_hex(24)}"
+
+    api_key = ApiKey(
+        email=email,
+        key=key,
+        label=body.label,
+        tier="institutional",
+        daily_limit=1000,
+    )
+    db.add(api_key)
+    db.commit()
+
+    return {
+        "api_key": key,
+        "label": body.label,
+        "daily_limit": 1000,
+        "message": "Store this key securely. It won't be shown again.",
+    }
+
+
+@app.get("/api/v1/keys")
+def list_api_keys(request: Request, email: str = "", db: Session = Depends(get_db)):
+    """List your API keys (key is masked)."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    keys = db.query(ApiKey).filter(ApiKey.email == email).all()
+    return {
+        "keys": [
+            {
+                "id": k.id,
+                "label": k.label,
+                "key_preview": f"{k.key[:8]}...{k.key[-4:]}",
+                "is_active": k.is_active,
+                "requests_today": k.requests_today,
+                "daily_limit": k.daily_limit,
+                "last_used_at": k.last_used_at,
+                "created_at": k.created_at,
+            }
+            for k in keys
+        ],
+    }
+
+
+@app.delete("/api/v1/keys/{key_id}")
+def revoke_api_key(key_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
+    """Revoke an API key."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    key = db.query(ApiKey).filter(ApiKey.id == key_id, ApiKey.email == email).first()
+    if not key:
+        raise HTTPException(404, detail="API key not found")
+
+    key.is_active = False
+    db.commit()
+    return {"status": "revoked", "key_id": key_id}
+
+
+# ── API v1 Data Endpoints ────────────────────
+@app.get("/api/v1/regime/{coin}")
+def api_regime(coin: str, request: Request, db: Session = Depends(get_db)):
+    """Get full regime stack for a coin."""
+    api_info = require_api_key(request, db)
+    coin = coin.upper()
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(400, detail=f"Unsupported coin. Choose from: {SUPPORTED_COINS}")
+
+    stack = build_regime_stack(coin, db)
+    quality = compute_regime_quality(stack) if not stack.get("incomplete") else None
+
+    return {
+        "coin": coin,
+        "stack": stack,
+        "quality": quality,
+        "api_requests_remaining": api_info["requests_remaining"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/v1/regime")
+def api_regime_all(request: Request, db: Session = Depends(get_db)):
+    """Get regime data for all coins."""
+    api_info = require_api_key(request, db)
+
+    results = []
+    for coin in SUPPORTED_COINS:
+        stack = build_regime_stack(coin, db)
+        if stack.get("incomplete"):
+            continue
+        quality = compute_regime_quality(stack)
+        results.append({
+            "coin": coin,
+            "macro": stack["macro"]["label"] if stack.get("macro") else None,
+            "trend": stack["trend"]["label"] if stack.get("trend") else None,
+            "execution": stack["execution"]["label"] if stack.get("execution") else None,
+            "alignment": stack.get("alignment"),
+            "direction": stack.get("direction"),
+            "exposure": stack.get("exposure"),
+            "shift_risk": stack.get("shift_risk"),
+            "hazard": stack.get("hazard"),
+            "survival": stack.get("survival"),
+            "quality_grade": quality["grade"],
+            "quality_score": quality["score"],
+        })
+
+    return {
+        "coins": results,
+        "count": len(results),
+        "api_requests_remaining": api_info["requests_remaining"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/v1/setup-quality/{coin}")
+def api_setup_quality(coin: str, request: Request, db: Session = Depends(get_db)):
+    """Get setup quality for a coin."""
+    api_info = require_api_key(request, db)
+    coin = coin.upper()
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(400, detail=f"Unsupported coin. Choose from: {SUPPORTED_COINS}")
+
+    setup = compute_setup_quality(coin, db)
+    return {
+        **setup,
+        "api_requests_remaining": api_info["requests_remaining"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/v1/scenarios/{coin}")
+def api_scenarios(coin: str, request: Request, db: Session = Depends(get_db)):
+    """Get probabilistic scenarios for a coin."""
+    api_info = require_api_key(request, db)
+    coin = coin.upper()
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(400, detail=f"Unsupported coin. Choose from: {SUPPORTED_COINS}")
+
+    scenarios = compute_scenarios(coin, db)
+    return {
+        **scenarios,
+        "api_requests_remaining": api_info["requests_remaining"],
+    }
+
+
+@app.get("/api/v1/decision/{coin}")
+def api_decision(coin: str, request: Request, db: Session = Depends(get_db)):
+    """Get decision engine output for a coin."""
+    api_info = require_api_key(request, db)
+    coin = coin.upper()
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(400, detail=f"Unsupported coin. Choose from: {SUPPORTED_COINS}")
+
+    stack = build_regime_stack(coin, db)
+    if stack.get("incomplete"):
+        return {"coin": coin, "error": "Insufficient data"}
+
+    breadth = compute_market_breadth(db)
+    hazard = stack.get("hazard") or 0
+    age_1h = current_age(db, coin, "1h")
+    avg_dur = average_regime_duration(db, coin, "1h")
+    maturity = trend_maturity_score(age_1h, avg_dur, hazard)
+
+    decision = compute_decision_score(
+        hazard=hazard, shift_risk=stack.get("shift_risk") or 0,
+        alignment=stack.get("alignment") or 0, survival=stack.get("survival") or 50,
+        breadth_score=breadth.get("breadth_score", 0), maturity_pct=maturity,
+    )
+
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    decision["regime"] = exec_label
+    decision["exposure"] = stack.get("exposure", 50)
+    decision["coin"] = coin
+
+    return {
+        **decision,
+        "api_requests_remaining": api_info["requests_remaining"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/v1/opportunity-ranking")
+def api_opportunity_ranking(request: Request, db: Session = Depends(get_db)):
+    """Get opportunity ranking across all coins."""
+    api_info = require_api_key(request, db)
+
+    ranking = compute_opportunity_ranking(db)
+    return {
+        **ranking,
+        "api_requests_remaining": api_info["requests_remaining"],
+    }
+
+
+@app.get("/api/v1/internal-damage/{coin}")
+def api_internal_damage(coin: str, request: Request, db: Session = Depends(get_db)):
+    """Get internal damage score for a coin."""
+    api_info = require_api_key(request, db)
+    coin = coin.upper()
+    if coin not in SUPPORTED_COINS:
+        raise HTTPException(400, detail=f"Unsupported coin. Choose from: {SUPPORTED_COINS}")
+
+    damage = compute_internal_damage(coin, db)
+    return {
+        **damage,
+        "api_requests_remaining": api_info["requests_remaining"],
+    }
+
+
+@app.get("/api/v1/breadth")
+def api_breadth(request: Request, db: Session = Depends(get_db)):
+    """Get market breadth data."""
+    api_info = require_api_key(request, db)
+
+    breadth = compute_market_breadth(db)
+    return {
+        **breadth,
+        "api_requests_remaining": api_info["requests_remaining"],
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/v1/usage")
+def api_usage(request: Request, db: Session = Depends(get_db)):
+    """Check your API usage."""
+    api_info = require_api_key(request, db)
+    return {
+        "email": api_info["email"],
+        "requests_remaining": api_info["requests_remaining"],
+        "daily_limit": 1000,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+
+# ═════════════════════════════════════════════════
+# WEBHOOKS — INSTITUTIONAL TIER
+# ═════════════════════════════════════════════════
+
+# ── Webhook CRUD ─────────────────────────────
+@app.post("/api/v1/webhooks")
+def create_webhook(body: WebhookCreateRequest, request: Request, db: Session = Depends(get_db)):
+    """Create a new webhook endpoint."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = body.email.strip().lower()
+
+    # Validate URL
+    if not body.url.startswith("https://"):
+        raise HTTPException(400, detail="Webhook URL must use HTTPS")
+
+    # Max 5 webhooks per user
+    existing = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.email == email,
+        WebhookEndpoint.is_active == True,
+    ).count()
+    if existing >= 5:
+        raise HTTPException(400, detail="Maximum 5 active webhooks per account")
+
+    # Generate signing secret if not provided
+    import secrets as secrets_mod
+    webhook_secret = body.secret or f"whsec_{secrets_mod.token_hex(20)}"
+
+    endpoint = WebhookEndpoint(
+        email=email,
+        url=body.url,
+        secret=webhook_secret,
+        events=body.events,
+    )
+    db.add(endpoint)
+    db.commit()
+    db.refresh(endpoint)
+
+    return {
+        "webhook_id": endpoint.id,
+        "url": endpoint.url,
+        "secret": webhook_secret,
+        "events": body.events.split(","),
+        "message": "Store the secret securely. Use it to verify webhook signatures.",
+        "verification": {
+            "header": "X-ChainPulse-Signature",
+            "format": "sha256=HMAC_SHA256(payload, secret)",
+        },
+    }
+
+
+@app.get("/api/v1/webhooks")
+def list_webhooks(request: Request, email: str = "", db: Session = Depends(get_db)):
+    """List your webhook endpoints."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    endpoints = db.query(WebhookEndpoint).filter(WebhookEndpoint.email == email).all()
+    return {
+        "webhooks": [
+            {
+                "id": e.id,
+                "url": e.url,
+                "events": e.events.split(",") if e.events else [],
+                "is_active": e.is_active,
+                "failure_count": e.failure_count,
+                "last_triggered_at": e.last_triggered_at,
+                "created_at": e.created_at,
+            }
+            for e in endpoints
+        ],
+    }
+
+
+@app.put("/api/v1/webhooks/{webhook_id}")
+def update_webhook(webhook_id: int, body: WebhookUpdateRequest, request: Request, db: Session = Depends(get_db)):
+    """Update a webhook endpoint."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = body.email.strip().lower()
+
+    endpoint = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.id == webhook_id,
+        WebhookEndpoint.email == email,
+    ).first()
+    if not endpoint:
+        raise HTTPException(404, detail="Webhook not found")
+
+    if body.url is not None:
+        if not body.url.startswith("https://"):
+            raise HTTPException(400, detail="Webhook URL must use HTTPS")
+        endpoint.url = body.url
+    if body.events is not None:
+        endpoint.events = body.events
+    if body.is_active is not None:
+        endpoint.is_active = body.is_active
+        if body.is_active:
+            endpoint.failure_count = 0  # Reset on re-enable
+
+    db.commit()
+    return {"status": "updated", "webhook_id": webhook_id}
+
+
+@app.delete("/api/v1/webhooks/{webhook_id}")
+def delete_webhook(webhook_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
+    """Delete a webhook endpoint."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    endpoint = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.id == webhook_id,
+        WebhookEndpoint.email == email,
+    ).first()
+    if not endpoint:
+        raise HTTPException(404, detail="Webhook not found")
+
+    db.delete(endpoint)
+    db.commit()
+    return {"status": "deleted", "webhook_id": webhook_id}
+
+
+@app.get("/api/v1/webhooks/{webhook_id}/deliveries")
+def webhook_deliveries(webhook_id: int, request: Request, email: str = "", limit: int = 20, db: Session = Depends(get_db)):
+    """View recent webhook deliveries."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    # Verify ownership
+    endpoint = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.id == webhook_id,
+        WebhookEndpoint.email == email,
+    ).first()
+    if not endpoint:
+        raise HTTPException(404, detail="Webhook not found")
+
+    deliveries = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.endpoint_id == webhook_id)
+        .order_by(WebhookDelivery.created_at.desc())
+        .limit(min(limit, 50))
+        .all()
+    )
+
+    return {
+        "webhook_id": webhook_id,
+        "url": endpoint.url,
+        "deliveries": [
+            {
+                "id": d.id,
+                "event_type": d.event_type,
+                "success": d.success,
+                "response_status": d.response_status,
+                "attempt": d.attempt,
+                "created_at": d.created_at,
+            }
+            for d in deliveries
+        ],
+    }
+
+
+@app.post("/api/v1/webhooks/{webhook_id}/test")
+def test_webhook(webhook_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
+    """Send a test webhook delivery."""
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="institutional")
+    email = email.strip().lower()
+
+    endpoint = db.query(WebhookEndpoint).filter(
+        WebhookEndpoint.id == webhook_id,
+        WebhookEndpoint.email == email,
+    ).first()
+    if not endpoint:
+        raise HTTPException(404, detail="Webhook not found")
+
+    test_payload = {
+        "event": "test",
+        "message": "This is a test webhook from ChainPulse",
+        "coin": "BTC",
+        "regime": "Risk-On",
+        "exposure": 65.0,
+        "shift_risk": 35.0,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+    success = deliver_webhook(endpoint, "test", test_payload, db)
+    return {
+        "success": success,
+        "message": "Test webhook delivered" if success else "Test webhook failed — check your endpoint",
+    }
