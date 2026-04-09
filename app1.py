@@ -16,9 +16,14 @@ import datetime
 import requests
 import math
 import stripe
+import httpx
+import asyncio
 import logging
 import json
 import resend
+import threading
+from collections import defaultdict
+from functools import wraps
 from logging_config import setup_logging
 setup_logging()
 from cache import cache_get, cache_set
@@ -478,6 +483,69 @@ LEAK_TYPES = {
 }
 
 
+class InMemoryRateLimiter:
+    """
+    Token bucket rate limiter.
+    For production at scale, replace with Redis-based (e.g., redis + lua script).
+    """
+    
+    def __init__(self):
+        self._buckets: dict[str, dict] = {}
+        self._lock = threading.Lock()
+    
+    def _get_key(self, request: Request, key_type: str = "ip") -> str:
+        if key_type == "ip":
+            forwarded = request.headers.get("x-forwarded-for")
+            ip = forwarded.split(",")[0].strip() if forwarded else (
+                request.client.host if request.client else "unknown"
+            )
+            return f"rate:{ip}"
+        return f"rate:{key_type}"
+    
+    def check(
+        self,
+        request: Request,
+        max_requests: int = 60,
+        window_seconds: int = 60,
+        key_type: str = "ip",
+    ) -> bool:
+        key = self._get_key(request, key_type)
+        now = time.time()
+        
+        with self._lock:
+            if key not in self._buckets:
+                self._buckets[key] = {"tokens": max_requests - 1, "last_refill": now}
+                return True
+            
+            bucket = self._buckets[key]
+            elapsed = now - bucket["last_refill"]
+            refill = elapsed * (max_requests / window_seconds)
+            bucket["tokens"] = min(max_requests, bucket["tokens"] + refill)
+            bucket["last_refill"] = now
+            
+            if bucket["tokens"] < 1:
+                return False
+            
+            bucket["tokens"] -= 1
+            return True
+    
+    def require(
+        self,
+        request: Request,
+        max_requests: int = 60,
+        window_seconds: int = 60,
+        key_type: str = "ip",
+    ):
+        if not self.check(request, max_requests, window_seconds, key_type):
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Try again later.",
+                headers={"Retry-After": str(window_seconds)},
+            )
+
+
+rate_limiter = InMemoryRateLimiter()
+
 # ─────────────────────────────────────────
 # APP SETUP
 # ─────────────────────────────────────────
@@ -716,6 +784,14 @@ def require_tier(authorization: str, db: Session, minimum_tier: str = "essential
 
     return user_info
 
+def require_email_ownership(user_info: dict, requested_email: str) -> str:
+    authenticated_email = (user_info.get("user").email if user_info.get("user") else None)
+    if not authenticated_email:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    requested_email = requested_email.strip().lower()
+    if requested_email and requested_email != authenticated_email:
+        raise HTTPException(status_code=403, detail="You can only access your own data.")
+    return authenticated_email
 
 def get_auth_header(request: Request) -> Optional[str]:
     return (
@@ -4500,8 +4576,8 @@ def if_nothing_panel_endpoint(request: Request, coin: str = "BTC", user_exposure
 @app.post("/user-profile")
 def save_user_profile(request: Request, body: UserProfileRequest, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, body.email)
     mult_map = {"conservative": 0.70, "balanced": 1.00, "aggressive": 1.25}
     risk_mult = mult_map.get(body.risk_identity, 1.0)
     user = db.query(User).filter(User.email == email).first()
@@ -4524,8 +4600,8 @@ def save_user_profile(request: Request, body: UserProfileRequest, db: Session = 
 @app.get("/user-profile")
 def get_user_profile(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
         return {"exists": False, "message": "No profile found. Complete onboarding to personalise."}
@@ -4547,8 +4623,8 @@ def get_user_profile(request: Request, email: str, coin: str = "BTC", db: Sessio
 @app.post("/log-exposure")
 def log_exposure(request: Request, body: ExposureLogRequest, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     if body.coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
     stack = build_regime_stack(body.coin, db)
@@ -4596,9 +4672,9 @@ def log_exposure(request: Request, body: ExposureLogRequest, db: Session = Depen
 @app.get("/discipline-score")
 def discipline_score_endpoint(request: Request, email: str, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     update_last_active(request, db)
-    email = email.strip().lower()
     logs = db.query(ExposureLog).filter(ExposureLog.email == email).order_by(ExposureLog.created_at.desc()).limit(30).all()
     result = compute_discipline_score(logs)
     result["email"] = email
@@ -4609,8 +4685,8 @@ def discipline_score_endpoint(request: Request, email: str, db: Session = Depend
 @app.get("/performance-comparison")
 def performance_comparison_endpoint(request: Request, email: str, coin: str = "BTC", limit: int = 30, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     entries = db.query(PerformanceEntry).filter(PerformanceEntry.email == email, PerformanceEntry.coin == coin).order_by(PerformanceEntry.date.asc()).limit(limit).all()
     result = compute_performance_comparison(entries)
     result["email"] = email
@@ -4622,8 +4698,8 @@ def performance_comparison_endpoint(request: Request, email: str, coin: str = "B
 @app.post("/log-performance")
 def log_performance(request: Request, body: PerformanceEntryRequest, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     if body.coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
     if body.price_open <= 0 or body.price_close <= 0:
@@ -4667,8 +4743,8 @@ def log_performance(request: Request, body: PerformanceEntryRequest, db: Session
 @app.get("/mistake-replay")
 def mistake_replay_endpoint(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     logs = db.query(ExposureLog).filter(ExposureLog.email == email, ExposureLog.coin == coin).order_by(ExposureLog.created_at.desc()).limit(50).all()
     replays = compute_mistake_replay(logs, db, coin)
     return {"email": email, "coin": coin, "replays": replays, "count": len(replays)}
@@ -4678,8 +4754,8 @@ def mistake_replay_endpoint(request: Request, email: str, coin: str = "BTC", db:
 @app.get("/edge-profile")
 def edge_profile_endpoint(request: Request, email: str, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
     entries = db.query(PerformanceEntry).filter(PerformanceEntry.email == email).order_by(PerformanceEntry.date.asc()).all()
 
     if len(entries) < 5:
@@ -4729,8 +4805,8 @@ def edge_profile_endpoint(request: Request, email: str, db: Session = Depends(ge
 @app.get("/full-accountability")
 def full_accountability(request: Request, email: str, coin: str = "BTC", db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="essential")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
 
     logs = db.query(ExposureLog).filter(ExposureLog.email == email).order_by(ExposureLog.created_at.desc()).limit(50).all()
     entries = db.query(PerformanceEntry).filter(PerformanceEntry.email == email, PerformanceEntry.coin == coin).order_by(PerformanceEntry.date.asc()).limit(30).all()
@@ -4895,6 +4971,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 # ── Checkout Session ─────────────────────────
 @app.post("/create-checkout-session")
 def create_checkout_session(body: CheckoutRequest, db: Session = Depends(get_db)):
+    rate_limiter.require(requests.request, max_requests=10, window_seconds=60)
     if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Stripe not configured")
 
@@ -4956,7 +5033,8 @@ def create_checkout_session(body: CheckoutRequest, db: Session = Depends(get_db)
 
 # ── Subscribe (free newsletter) ──────────────
 @app.post("/subscribe")
-def subscribe(body: SubscribeRequest, db: Session = Depends(get_db)):
+def subscribe(body: SubscribeRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limiter.require(request, max_requests=5, window_seconds=3600)
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if not user:
@@ -5020,7 +5098,8 @@ def confirm(email: str, db: Session = Depends(get_db)):
 # FIX 1.3: Rate limiting note — in production add slowapi or similar
 # FIX 1.3: Token created_at set on rotation
 @app.post("/restore-access")
-def restore_access(body: RestoreRequest, db: Session = Depends(get_db)):
+def restore_access(body: RestoreRequest, request: Request, db: Session = Depends(get_db)):
+    rate_limiter.require(request, max_requests=3, window_seconds=3600)
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if not user or user.subscription_status != "active":
@@ -5411,9 +5490,9 @@ def behavioral_alpha_endpoint(request: Request, email: str = "", lookback_days: 
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="pro")
+    user_info = require_tier(auth, db, minimum_tier="pro")
+    email = require_email_ownership(user_info, email)
     update_last_active(request, db)
-    email = email.strip().lower()
     lookback_days = min(max(7, lookback_days), 90)
     return compute_behavioral_alpha_report(email, db, lookback_days)
 
@@ -5428,8 +5507,8 @@ def trade_plan_endpoint(request: Request, body: TradePlanRequest, db: Session = 
     if body.strategy_mode not in ARCHETYPE_CONFIG:
         raise HTTPException(status_code=400, detail=f"Invalid strategy. Choose from: {list(ARCHETYPE_CONFIG.keys())}")
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="pro")
-    update_last_active(request, db)
+    user_info = require_tier(auth, db, minimum_tier="pro")
+    email = require_email_ownership(user_info, body.email)
     email = body.email.strip().lower()
     return compute_trade_plan(coin=body.coin, account_size=body.account_size, strategy_mode=body.strategy_mode, db=db, email=email)
 
@@ -5475,8 +5554,8 @@ def what_changed_endpoint(request: Request, lookback_hours: int = 24, db: Sessio
 @app.post("/alert-thresholds")
 def save_alert_thresholds(request: Request, body: AlertThresholdRequest, db: Session = Depends(get_db)):
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, body.email)
     existing = db.query(AlertThreshold).filter(AlertThreshold.email == email, AlertThreshold.coin == body.coin).first()
     if existing:
         existing.shift_risk_threshold = body.shift_risk_threshold
@@ -5495,8 +5574,8 @@ def get_alert_thresholds(request: Request, email: str = "", db: Session = Depend
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
     thresholds = db.query(AlertThreshold).filter(AlertThreshold.email == email).all()
     return {"email": email, "thresholds": [{"coin": t.coin, "shift_risk_threshold": t.shift_risk_threshold, "exposure_change_threshold": t.exposure_change_threshold, "setup_quality_threshold": t.setup_quality_threshold, "regime_quality_threshold": t.regime_quality_threshold, "enabled": t.enabled} for t in thresholds]}
 
@@ -5507,9 +5586,9 @@ def evaluate_alerts_endpoint(request: Request, email: str = "", db: Session = De
     if not email:
         raise HTTPException(status_code=400, detail="Email required")
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="pro")
+    user_info = require_tier(auth, db, minimum_tier="pro")
+    email = require_email_ownership(user_info, email)
     update_last_active(request, db)
-    email = email.strip().lower()
     alerts = evaluate_dynamic_alerts(email, db)
     return {"email": email, "alerts": alerts, "alert_count": len(alerts), "high_severity_count": sum(1 for a in alerts if a.get("severity") == "high"), "timestamp": datetime.datetime.utcnow().isoformat()}
 
@@ -5627,9 +5706,8 @@ def list_archetypes():
 def save_archetype_endpoint(request: Request, body: TraderArchetype, db: Session = Depends(get_db)):
     if body.archetype not in ARCHETYPE_CONFIG:
         raise HTTPException(status_code=400, detail=f"Invalid archetype. Choose from: {list(ARCHETYPE_CONFIG.keys())}")
-    if not resolve_pro_status(get_auth_header(request), db):
-        raise HTTPException(status_code=403, detail="Pro subscription required.")
-    email = body.email.strip().lower()
+    user_info = require_tier(get_auth_header(request), db, minimum_tier="essential")
+    email = require_email_ownership(user_info, body.email)
     config = ARCHETYPE_CONFIG[body.archetype]
     profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
@@ -5648,18 +5726,18 @@ def save_archetype_endpoint(request: Request, body: TraderArchetype, db: Session
 # FULL PREMIUM DASHBOARD — FIX 1.1: Compute shared dependencies ONCE
 # ─────────────────────────────────────────
 @app.get("/premium-dashboard")
-def premium_dashboard(request: Request, coin: str = "BTC", email: str = "", db: Session = Depends(get_db)):
+async def premium_dashboard(request: Request, coin: str = "BTC", email: str = "", db: Session = Depends(get_db)):
+    rate_limiter.require(request, max_requests=30, window_seconds=60)
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
     auth = get_auth_header(request)
-    user_info = resolve_user_tier(auth, db)
-    if not user_info["is_pro"]:
-        raise HTTPException(status_code=403, detail="Paid subscription required.")
+    user_info = require_tier(auth, db, minimum_tier="essential")
     tier = user_info["tier"]
     update_last_active(request, db)
 
     start = time.perf_counter()
-    email = email.strip().lower() if email else ""
+    if email:
+        email = require_email_ownership(user_info, email)
 
     # ─── FIX 1.1: Fetch ALL market data ONCE ───
     market_data = fetch_all_market_data(coin)
@@ -6107,14 +6185,16 @@ def cron_all(secret: str = "", background_tasks: BackgroundTasks = None, db: Ses
 # ─────────────────────────────────────────
 @app.get("/dashboard-v2")
 def dashboard_v2(request: Request, coin: str = "BTC", email: str = "", db: Session = Depends(get_db)):
+    rate_limiter.require(request, max_requests=30, window_seconds=60)
     if coin not in SUPPORTED_COINS:
         raise HTTPException(status_code=400, detail="Unsupported coin")
 
     authorization = get_auth_header(request)
-    is_pro = resolve_pro_status(authorization, db)
     user_info = resolve_user_tier(authorization, db)
+    is_pro = user_info["is_pro"]
     tier = user_info["tier"]
-    email = email.strip().lower() if email else ""
+    if email:
+        email = require_email_ownership(user_info, email)
 
     # ── Core (Free) ──
     stack_response = regime_stack_endpoint(request, coin, db)
@@ -6297,9 +6377,8 @@ def dashboard_v2(request: Request, coin: str = "BTC", email: str = "", db: Sessi
 def create_api_key(body: ApiKeyRequest, request: Request, db: Session = Depends(get_db)):
     """Create a new API key. Requires Institutional tier."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, body.email)
 
     # Check existing keys (max 3 per user)
     existing = db.query(ApiKey).filter(ApiKey.email == email, ApiKey.is_active == True).count()
@@ -6331,8 +6410,8 @@ def create_api_key(body: ApiKeyRequest, request: Request, db: Session = Depends(
 def list_api_keys(request: Request, email: str = "", db: Session = Depends(get_db)):
     """List your API keys (key is masked)."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     keys = db.query(ApiKey).filter(ApiKey.email == email).all()
     return {
@@ -6356,8 +6435,8 @@ def list_api_keys(request: Request, email: str = "", db: Session = Depends(get_d
 def revoke_api_key(key_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
     """Revoke an API key."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     key = db.query(ApiKey).filter(ApiKey.id == key_id, ApiKey.email == email).first()
     if not key:
@@ -6551,8 +6630,8 @@ def api_usage(request: Request, db: Session = Depends(get_db)):
 def create_webhook(body: WebhookCreateRequest, request: Request, db: Session = Depends(get_db)):
     """Create a new webhook endpoint."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, body.email)
 
     # Validate URL
     if not body.url.startswith("https://"):
@@ -6597,8 +6676,8 @@ def create_webhook(body: WebhookCreateRequest, request: Request, db: Session = D
 def list_webhooks(request: Request, email: str = "", db: Session = Depends(get_db)):
     """List your webhook endpoints."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     endpoints = db.query(WebhookEndpoint).filter(WebhookEndpoint.email == email).all()
     return {
@@ -6621,8 +6700,8 @@ def list_webhooks(request: Request, email: str = "", db: Session = Depends(get_d
 def update_webhook(webhook_id: int, body: WebhookUpdateRequest, request: Request, db: Session = Depends(get_db)):
     """Update a webhook endpoint."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = body.email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, body.email)
 
     endpoint = db.query(WebhookEndpoint).filter(
         WebhookEndpoint.id == webhook_id,
@@ -6650,8 +6729,8 @@ def update_webhook(webhook_id: int, body: WebhookUpdateRequest, request: Request
 def delete_webhook(webhook_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
     """Delete a webhook endpoint."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     endpoint = db.query(WebhookEndpoint).filter(
         WebhookEndpoint.id == webhook_id,
@@ -6669,8 +6748,8 @@ def delete_webhook(webhook_id: int, request: Request, email: str = "", db: Sessi
 def webhook_deliveries(webhook_id: int, request: Request, email: str = "", limit: int = 20, db: Session = Depends(get_db)):
     """View recent webhook deliveries."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     # Verify ownership
     endpoint = db.query(WebhookEndpoint).filter(
@@ -6709,8 +6788,8 @@ def webhook_deliveries(webhook_id: int, request: Request, email: str = "", limit
 def test_webhook(webhook_id: int, request: Request, email: str = "", db: Session = Depends(get_db)):
     """Send a test webhook delivery."""
     auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="institutional")
-    email = email.strip().lower()
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
     endpoint = db.query(WebhookEndpoint).filter(
         WebhookEndpoint.id == webhook_id,
