@@ -1,4 +1,4 @@
-﻿import datetime
+import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 

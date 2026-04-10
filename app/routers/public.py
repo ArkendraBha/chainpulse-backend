@@ -43,9 +43,9 @@ from app.utils.enums import RISK_EVENTS, PLAYBOOK_DATA
 router = APIRouter()
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # UPDATE ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/update-now")
 async def update_now(
@@ -95,9 +95,9 @@ async def update_all(
     }
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # REGIME ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/regime-stack")
 async def regime_stack_endpoint(
@@ -313,9 +313,9 @@ def regime_history(
     }
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # FREE / PUBLIC ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/risk-events")
 def risk_events():
@@ -431,7 +431,7 @@ def ticker(request: Request):
     symbols = [f"{c}USDT" for c in settings.SUPPORTED_COINS]
     try:
         r = requests.get(
-        "[api.binance.com](https://api.binance.com/api/v3/ticker/24hr)",
+        "https://api.binance.com/api/v3/ticker/24hr",
             params={"symbols": json.dumps(symbols)},
             timeout=10,
         )
@@ -492,9 +492,9 @@ def sample_report():
     return FileResponse(path, media_type="application/pdf")
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DEBUG ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.get("/debug-prices")
 async def debug_prices(
@@ -541,9 +541,9 @@ def debug_stack(
     return {"stack": stack, "breadth": breadth, "quality": quality}
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # SUBSCRIPTION ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/subscribe")
 async def subscribe(
@@ -639,7 +639,7 @@ def confirm(email: str, db: Session = Depends(get_db)):
   <div class="card">
     <h1>Subscription Confirmed</h1>
     <p>Your Daily Regime Brief is now active.</p>
-    <a href="[chainpulse.pro](https://chainpulse.pro/app)" class="btn">Go to Dashboard</a>
+    <a href="https://chainpulse.pro/app" class="btn">Go to Dashboard</a>
   </div>
 </body>
 </html>
@@ -683,9 +683,9 @@ async def restore_access(
     return {"status": "sent"}
 
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # STRIPE ENDPOINTS
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @router.post("/stripe-webhook")
 async def stripe_webhook(
@@ -724,7 +724,7 @@ async def stripe_webhook(
 
     from app.services.emails import send_email, welcome_email_html
 
-    # ── CHECKOUT COMPLETED ──
+    # â”€â”€ CHECKOUT COMPLETED â”€â”€
     if event_type == "checkout.session.completed":
         customer_email = (
             data.get("customer_details", {}).get("email")
@@ -764,7 +764,7 @@ async def stripe_webhook(
                 f"Activated {email} on {tier} tier"
             )
 
-    # ── SUBSCRIPTION UPDATED ──
+    # â”€â”€ SUBSCRIPTION UPDATED â”€â”€
     elif event_type == "customer.subscription.updated":
         subscription = data
         sub_id = subscription.get("id")
@@ -796,7 +796,7 @@ async def stripe_webhook(
                 f"Updated {user.email}: status={status}, tier={tier}"
             )
 
-    # ── SUBSCRIPTION CANCELED ──
+    # â”€â”€ SUBSCRIPTION CANCELED â”€â”€
     elif event_type in (
         "customer.subscription.deleted",
         "customer.subscription.paused",
@@ -823,7 +823,7 @@ async def stripe_webhook(
                 f"Canceled {user.email}"
             )
 
-    # ── PAYMENT FAILED ──
+    # â”€â”€ PAYMENT FAILED â”€â”€
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
         user = db.query(User).filter(

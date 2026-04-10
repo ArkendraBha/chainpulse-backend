@@ -1,4 +1,4 @@
-﻿import os
+import os
 import stripe as _stripe
 from dotenv import load_dotenv
 

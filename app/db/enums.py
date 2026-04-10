@@ -1,4 +1,4 @@
-﻿# -----------------------------------------
+# -----------------------------------------
 # All constants, enums, playbook data,
 # archetype configs, risk events, leak types
 # -----------------------------------------

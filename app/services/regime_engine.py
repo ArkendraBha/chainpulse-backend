@@ -2464,11 +2464,11 @@ def compute_what_changed(
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # INTELLIGENCE BRIEF CACHE ENGINE
 # Stores expensive computed briefs in DB
 # so they survive server restarts
-# ─────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import json as _json
 from app.db.models import IntelligenceBrief
 

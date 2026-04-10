@@ -1,4 +1,4 @@
-﻿import ipaddress
+import ipaddress
 import socket
 from urllib.parse import urlparse
 from fastapi import HTTPException

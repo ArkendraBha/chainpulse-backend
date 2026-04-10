@@ -1,4 +1,4 @@
-﻿import datetime
+import datetime
 import secrets as secrets_mod
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session

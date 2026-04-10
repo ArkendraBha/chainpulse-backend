@@ -154,7 +154,7 @@ async def run_full_update(db_factory):
                         continue
 
                     alert_lines = [
-                        f"� {a.get('coin', '')} - {a.get('message', '')}"
+                        f"ï¿½ {a.get('coin', '')} - {a.get('message', '')}"
                         for a in high_alerts[:3]
                     ]
                     alert_text = "<br>".join(alert_lines)
