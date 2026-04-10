@@ -1,10 +1,21 @@
-﻿import datetime
+import datetime
 from typing import Optional
 from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import User, UserProfile
+import secrets
+import hashlib
+
+def generate_access_token() -> str:
+    """Cryptographically secure token - 256 bits of entropy."""
+    return secrets.token_urlsafe(32)
+
+def hash_token(token: str) -> str:
+    """Store hashed token in DB, compare hash on lookup."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
 
 
 def resolve_user_tier(authorization: Optional[str], db: Session) -> dict:
@@ -16,7 +27,8 @@ def resolve_user_tier(authorization: Optional[str], db: Session) -> dict:
     if not token or len(token) < 20:
         return {"is_pro": False, "tier": "free", "user": None}
 
-    user = db.query(User).filter(User.access_token == token).first()
+    token_hash = hash_token(token)
+    user = db.query(User).filter(User.access_token == token_hash).first()
     if not user:
         return {"is_pro": False, "tier": "free", "user": None}
 

@@ -1,7 +1,9 @@
 ﻿import os
+import stripe as _stripe
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 class Settings:
     MODEL_VERSION: str = "5.0.0"
@@ -12,8 +14,14 @@ class Settings:
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     UPDATE_SECRET: str = os.getenv("UPDATE_SECRET", "changeme")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "[chainpulse.pro](https://chainpulse.pro)")
-    BACKEND_URL: str = os.getenv("BACKEND_URL", "[chainpulse-backend-2xok.onrender.com](https://chainpulse-backend-2xok.onrender.com)")
-    RESEND_FROM_EMAIL: str = (os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev").strip()
+    BACKEND_URL: str = os.getenv(
+        "BACKEND_URL", "[chainpulse-backend-2xok.onrender.com](https://chainpulse-backend-2xok.onrender.com)"
+    )
+    RESEND_FROM_EMAIL: str = (
+        os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev"
+    ).strip()
+
+    TOKEN_EXPIRY_DAYS: int = 90
 
     ALLOW_ORIGINS = [
         "[chainpulse.pro](https://chainpulse.pro)",
@@ -60,11 +68,9 @@ class Settings:
         "Strong Risk-Off": -2,
     }
 
-    TOKEN_EXPIRY_DAYS: int = 90
-
-    PRICE_MONTHLY: int = 39
-    PRICE_ANNUAL: int = 348
 
 settings = Settings()
 
-
+# Initialize Stripe with API key at import time
+if settings.STRIPE_SECRET_KEY:
+    _stripe.api_key = settings.STRIPE_SECRET_KEY

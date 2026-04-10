@@ -1,4 +1,4 @@
-﻿import json
+import json
 import logging
 import datetime
 from sqlalchemy.orm import Session
@@ -9,6 +9,33 @@ from app.db.models import WebhookEndpoint, WebhookDelivery, User
 
 logger = logging.getLogger("chainpulse")
 
+RETRY_DELAYS = [10, 30, 120, 300, 600]
+
+
+async def deliver_webhook_with_retry(
+    endpoint: WebhookEndpoint,
+    event_type: str,
+    payload: dict,
+    db: Session,
+    max_retries: int = 5,
+) -> bool:
+    """Delivers webhook with exponential backoff retry."""
+    for attempt in range(max_retries):
+        success = await deliver_webhook(
+            endpoint, event_type, payload, db
+        )
+        if success:
+            return True
+
+        if attempt < max_retries - 1:
+            delay = RETRY_DELAYS[attempt]
+            import logging
+            logging.getLogger("chainpulse").warning(
+                f"Webhook retry {attempt + 1} in {delay}s: {endpoint.url}"
+            )
+            await asyncio.sleep(delay)
+
+    return False
 
 async def deliver_webhook(
     endpoint: WebhookEndpoint,
@@ -117,7 +144,7 @@ async def trigger_webhooks(
             **payload,
         }
 
-        await deliver_webhook(endpoint, event_type, full_payload, db)
+        await deliver_webhook_with_retry(endpoint, event_type, full_payload, db)
         sent += 1
 
     return sent

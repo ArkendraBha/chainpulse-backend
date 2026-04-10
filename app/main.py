@@ -1,6 +1,9 @@
-﻿import datetime
+import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.logging_middleware import RequestLoggingMiddleware
+app.add_middleware(RequestLoggingMiddleware)
+
 from sqlalchemy import text
 
 from app.core.config import settings
@@ -42,6 +45,43 @@ app.include_router(user.router)
 app.include_router(trade.router)
 app.include_router(webhooks_router.router)
 app.include_router(admin.router)
+
+import traceback
+import uuid
+from fastapi.responses import JSONResponse
+from fastapi import HTTPException as FastAPIHTTPException
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    error_id = str(uuid.uuid4())[:8]
+    import logging
+    logging.getLogger("chainpulse").error(
+        f"Unhandled exception [{error_id}]: "
+        f"{type(exc).__name__}: {exc}\n"
+        f"{traceback.format_exc()}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "An internal error occurred.",
+            "error_id": error_id,
+            "message": (
+                f"Please contact support with error ID: {error_id}"
+            ),
+        },
+    )
+
+
+@app.exception_handler(FastAPIHTTPException)
+async def http_exception_handler(
+    request: Request, exc: FastAPIHTTPException
+):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None) or {},
+    )
+
 
 
 @app.get("/health")

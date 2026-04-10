@@ -1,29 +1,53 @@
 ﻿import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import NullPool
 from app.core.config import settings
 
 DATABASE_URL = settings.DATABASE_URL
 
-if DATABASE_URL.startswith("sqlite"):
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"check_same_thread": False},
-    )
-else:
-    connect_args = {}
-    if "neon.tech" in DATABASE_URL:
-        connect_args = {"sslmode": "require"}
 
-    engine = create_engine(
+def create_db_engine():
+    if DATABASE_URL.startswith("sqlite"):
+        return create_engine(
+            DATABASE_URL,
+            connect_args={"check_same_thread": False},
+        )
+
+    # Neon / Supabase serverless - use NullPool
+    is_serverless = any(x in DATABASE_URL for x in [
+        "neon.tech", "supabase", "pooler"
+    ])
+
+    if is_serverless:
+        return create_engine(
+            DATABASE_URL,
+            poolclass=NullPool,
+            connect_args={
+                "sslmode": "require",
+                "connect_timeout": 10,
+                "application_name": "chainpulse",
+            },
+        )
+
+    # Standard PostgreSQL
+    return create_engine(
         DATABASE_URL,
         pool_size=5,
         max_overflow=10,
         pool_pre_ping=True,
-        connect_args=connect_args,
+        pool_recycle=300,
+        pool_timeout=30,
+        connect_args={"connect_timeout": 10},
     )
 
-SessionLocal = sessionmaker(bind=engine)
+
+engine = create_db_engine()
+SessionLocal = sessionmaker(
+    bind=engine,
+    autocommit=False,
+    autoflush=False,
+)
 Base = declarative_base()
 
 
@@ -31,7 +55,8 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
-
-

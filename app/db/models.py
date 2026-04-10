@@ -157,6 +157,12 @@ class AlertThreshold(Base):
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class StripeWebhookEvent(Base):
+    __tablename__ = "stripe_webhook_events"
+    id = Column(Integer, primary_key=True)
+    stripe_event_id = Column(String, unique=True, index=True)
+    event_type = Column(String)
+    processed_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 class TradePlan(Base):
     __tablename__ = "trade_plans"
@@ -227,5 +233,43 @@ class IntelligenceBrief(Base):
     brief_type = Column(String, default="weekly")
     content_json = Column(String, default="{}")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+from sqlalchemy import event as sa_event
+from sqlalchemy import text as sa_text
+
+
+@sa_event.listens_for(Base.metadata, "after_create")
+def create_performance_indexes(target, connection, **kwargs):
+    """Creates additional indexes after table creation."""
+    import logging
+    logger = logging.getLogger("chainpulse")
+
+    indexes = [
+        """
+        CREATE INDEX IF NOT EXISTS ix_users_active_tier
+        ON users (tier, last_active_at)
+        WHERE subscription_status = 'active'
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_market_recent
+        ON market_summary (coin, timeframe, created_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_exposure_email_created
+        ON exposure_logs (email, created_at DESC)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_performance_email_date
+        ON performance_entries (email, date DESC)
+        """,
+    ]
+
+    for sql in indexes:
+        try:
+            connection.execute(sa_text(sql.strip()))
+            connection.commit()
+        except Exception as e:
+            logger.warning(f"Index creation skipped: {e}")
+
 
 

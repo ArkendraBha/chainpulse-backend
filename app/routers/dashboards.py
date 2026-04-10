@@ -1,4 +1,4 @@
-﻿import time
+import time
 import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -114,12 +114,15 @@ async def dashboard(
     ]
 
     # Overview
+    from app.services.market_data import build_regime_stack_bulk
     overview_list = []
     breadth = compute_market_breadth(db)
+    all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
     for c in settings.SUPPORTED_COINS:
-        s = build_regime_stack(c, db)
-        if s["incomplete"]:
+        s = all_stacks.get(c, {"incomplete": True, "coin": c})
+        if s.get("incomplete"):
             continue
+
         if is_pro:
             overview_list.append({
                 "coin": s["coin"],
@@ -528,12 +531,15 @@ async def dashboard_v2(
         for i, r in enumerate(records)
     ]
 
+    from app.services.market_data import build_regime_stack_bulk
     overview_list = []
     breadth = compute_market_breadth(db)
+    all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
     for c in settings.SUPPORTED_COINS:
-        s = build_regime_stack(c, db)
-        if s["incomplete"]:
+        s = all_stacks.get(c, {"incomplete": True, "coin": c})
+        if s.get("incomplete"):
             continue
+
         if is_pro:
             overview_list.append({
                 "coin": s["coin"],
@@ -787,11 +793,14 @@ async def premium_overview(
     if cached:
         return cached
 
+    from app.services.market_data import build_regime_stack_bulk
     coins_data = []
+    all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
     for coin in settings.SUPPORTED_COINS:
-        stack = build_regime_stack(coin, db)
-        if stack["incomplete"]:
+        stack = all_stacks.get(coin, {"incomplete": True, "coin": coin})
+        if stack.get("incomplete"):
             continue
+
         quality = compute_regime_quality(stack)
         try:
             setup = await compute_setup_quality(coin, db, stack=stack)

@@ -1,6 +1,7 @@
-﻿import datetime
+import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
+import asyncio
 
 from app.core.security import constant_time_compare
 from app.core.config import settings
@@ -229,7 +230,15 @@ def send_what_changed_email(
     from app.services.regime_engine import compute_what_changed
     constant_time_compare(secret)
 
-    what_changed = compute_what_changed(db, lookback_hours=72)
+    from app.services.regime_engine import get_or_compute_brief, compute_what_changed
+    what_changed = get_or_compute_brief(
+        db=db,
+        brief_type="what_changed_72h",
+        compute_fn=compute_what_changed,
+        max_age_minutes=120,
+        db=db,
+        lookback_hours=72,
+    )
     pro_users = db.query(User).filter(
         User.subscription_status == "active",
         User.alerts_enabled == True,

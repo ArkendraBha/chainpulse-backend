@@ -1,4 +1,4 @@
-﻿import time
+import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -497,16 +497,36 @@ def what_changed_endpoint(
     lookback_hours: int = 24,
     db: Session = Depends(get_db),
 ):
+    from app.services.regime_engine import get_or_compute_brief
+
     auth = get_auth_header(request)
     require_tier(auth, db, minimum_tier="pro")
     update_last_active(request, db)
     lookback_hours = min(max(1, lookback_hours), 168)
+
+    # Try in-memory cache first (fast)
     cached = cache_get(f"what_changed:{lookback_hours}")
     if cached:
         return cached
-    result = compute_what_changed(db, lookback_hours=lookback_hours)
+
+    # Try DB cache second (survives restarts)
+    from app.services.regime_engine import (
+        get_or_compute_brief,
+        compute_what_changed,
+    )
+    result = get_or_compute_brief(
+        db=db,
+        brief_type=f"what_changed_{lookback_hours}h",
+        compute_fn=compute_what_changed,
+        max_age_minutes=60,
+        db=db,
+        lookback_hours=lookback_hours,
+    )
+
+    # Save to in-memory cache too
     cache_set(f"what_changed:{lookback_hours}", result, ttl=120)
     return result
+
 
 
 @router.get("/archetype-overlay")

@@ -1,4 +1,4 @@
-﻿import math
+import math
 import json
 import logging
 import datetime
@@ -2464,4 +2464,99 @@ def compute_what_changed(
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
+# ─────────────────────────────────────────
+# INTELLIGENCE BRIEF CACHE ENGINE
+# Stores expensive computed briefs in DB
+# so they survive server restarts
+# ─────────────────────────────────────────
+import json as _json
+from app.db.models import IntelligenceBrief
+
+
+def save_intelligence_brief(
+    db: Session,
+    brief_type: str,
+    content: dict,
+) -> None:
+    """
+    Saves a computed brief to the DB.
+    Overwrites existing brief of same type.
+    Used to persist expensive computations across restarts.
+    """
+    existing = (
+        db.query(IntelligenceBrief)
+        .filter(IntelligenceBrief.brief_type == brief_type)
+        .order_by(IntelligenceBrief.created_at.desc())
+        .first()
+    )
+
+    if existing:
+        existing.content_json = _json.dumps(content)
+        existing.created_at = datetime.datetime.utcnow()
+    else:
+        brief = IntelligenceBrief(
+            brief_type=brief_type,
+            content_json=_json.dumps(content),
+        )
+        db.add(brief)
+
+    db.commit()
+
+
+def get_intelligence_brief(
+    db: Session,
+    brief_type: str,
+    max_age_minutes: int = 60,
+) -> dict | None:
+    """
+    Retrieves a cached brief from DB.
+    Returns None if not found or too old.
+    Used as fallback when live computation fails.
+    """
+    brief = (
+        db.query(IntelligenceBrief)
+        .filter(IntelligenceBrief.brief_type == brief_type)
+        .order_by(IntelligenceBrief.created_at.desc())
+        .first()
+    )
+
+    if not brief:
+        return None
+
+    age_minutes = (
+        datetime.datetime.utcnow() - brief.created_at
+    ).total_seconds() / 60
+
+    if age_minutes > max_age_minutes:
+        return None
+
+    try:
+        return _json.loads(brief.content_json)
+    except Exception:
+        return None
+
+
+def get_or_compute_brief(
+    db: Session,
+    brief_type: str,
+    compute_fn,
+    max_age_minutes: int = 60,
+    **kwargs,
+) -> dict:
+    """
+    Check DB cache first, compute and save if missing or stale.
+    Drop-in replacement for expensive brief computations.
+    """
+    cached = get_intelligence_brief(db, brief_type, max_age_minutes)
+    if cached:
+        return cached
+
+    result = compute_fn(**kwargs)
+    if result:
+        try:
+            save_intelligence_brief(db, brief_type, result)
+        except Exception:
+            pass
+
+    return result
 

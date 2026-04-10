@@ -1,4 +1,4 @@
-﻿import math
+import math
 import logging
 import asyncio
 import datetime
@@ -984,3 +984,112 @@ async def update_market(
     return entry
 
 
+def build_regime_stack_bulk(coins: list, db: Session) -> dict:
+    """
+    Fetches regime data for ALL coins in 3 DB queries total.
+    Use this instead of calling build_regime_stack in a loop.
+    """
+    from sqlalchemy import func
+
+    stacks_raw = {}
+
+    for tf in ["1d", "4h", "1h"]:
+        subq = (
+            db.query(
+                MarketSummary.coin,
+                func.max(MarketSummary.created_at).label("max_created"),
+            )
+            .filter(
+                MarketSummary.coin.in_(coins),
+                MarketSummary.timeframe == tf,
+            )
+            .group_by(MarketSummary.coin)
+            .subquery()
+        )
+
+        records = (
+            db.query(MarketSummary)
+            .join(
+                subq,
+                (MarketSummary.coin == subq.c.coin)
+                & (MarketSummary.created_at == subq.c.max_created),
+            )
+            .filter(MarketSummary.timeframe == tf)
+            .all()
+        )
+
+        for record in records:
+            if record.coin not in stacks_raw:
+                stacks_raw[record.coin] = {}
+            stacks_raw[record.coin][tf] = {
+                "label": record.label,
+                "score": record.score,
+                "coherence": record.coherence,
+                "timestamp": record.created_at,
+            }
+
+    result = {}
+    for coin in coins:
+        coin_data = stacks_raw.get(coin, {})
+
+        if len(coin_data) < 3:
+            result[coin] = {
+                "coin": coin,
+                "macro": coin_data.get("1d"),
+                "trend": coin_data.get("4h"),
+                "execution": coin_data.get("1h"),
+                "alignment": None,
+                "direction": None,
+                "exposure": None,
+                "shift_risk": None,
+                "survival": None,
+                "hazard": None,
+                "incomplete": True,
+            }
+            continue
+
+        labels = [
+            coin_data["1d"]["label"],
+            coin_data["4h"]["label"],
+            coin_data["1h"]["label"],
+        ]
+        coherences = [
+            coin_data["1d"]["coherence"] or 0,
+            coin_data["4h"]["coherence"] or 0,
+            coin_data["1h"]["coherence"] or 0,
+        ]
+
+        align = regime_alignment(labels)
+        direction = alignment_direction(labels)
+        avg_coh = sum(coherences) / len(coherences)
+        survival_1h = survival_probability(db, coin, "1h")
+        hazard_1h = hazard_rate(db, coin, "1h")
+
+        exposure = exposure_recommendation_stacked(
+            macro_label=coin_data["1d"]["label"],
+            trend_label=coin_data["4h"]["label"],
+            exec_label=coin_data["1h"]["label"],
+            alignment=align,
+            survival_1h=survival_1h,
+            hazard_1h=hazard_1h,
+            coherence_1h=coin_data["1h"]["coherence"] or 50,
+        )
+        shift_risk_val = regime_shift_risk(
+            hazard_1h, survival_1h, avg_coh
+        )
+
+        result[coin] = {
+            "coin": coin,
+            "macro": coin_data["1d"],
+            "trend": coin_data["4h"],
+            "execution": coin_data["1h"],
+            "alignment": align,
+            "direction": direction,
+            "exposure": exposure,
+            "shift_risk": shift_risk_val,
+            "survival": survival_1h,
+            "hazard": hazard_1h,
+            "incomplete": False,
+        }
+
+    return result
