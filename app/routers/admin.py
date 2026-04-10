@@ -236,7 +236,6 @@ def send_what_changed_email(
         brief_type="what_changed_72h",
         compute_fn=compute_what_changed,
         max_age_minutes=120,
-        db=db,
         lookback_hours=72,
     )
     pro_users = db.query(User).filter(

@@ -519,7 +519,6 @@ def what_changed_endpoint(
         brief_type=f"what_changed_{lookback_hours}h",
         compute_fn=compute_what_changed,
         max_age_minutes=60,
-        db=db,
         lookback_hours=lookback_hours,
     )
 
