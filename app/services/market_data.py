@@ -1,22 +1,26 @@
 import math
 import logging
 import asyncio
+import asyncio
 import datetime
+import functools
 from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.core.cache import cache_get, cache_set
 from app.core.config import settings
-from app.core.startup import httpx_client
 from app.db.models import MarketSummary
 
 logger = logging.getLogger("chainpulse")
 
+
+# ─────────────────────────────────────────
+# KLINE FETCHER — uses requests in executor
+# ─────────────────────────────────────────
 async def get_klines(symbol: str, interval: str, limit: int = 120):
     """
-    FIX 7: Async kline fetcher using httpx.
-    Cache-first with stale fallback.
-    Uses fresh client per call to avoid stale global reference.
+    Fetches kline data from Binance.
+    Uses requests (sync) in a thread pool — matches original working code.
     """
     cache_key = f"klines:{symbol}:{interval}:{limit}"
     cached = cache_get(cache_key)
@@ -31,50 +35,55 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
         "limit": limit,
     }
 
+    def _fetch_sync(url: str, params: dict):
+        import requests as _requests
+        r = _requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
     for url in urls:
         try:
-            import httpx as _httpx
-            async with _httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(url, params=params)
-                r.raise_for_status()
-                data = r.json()
-                if not isinstance(data, list) or len(data) == 0:
-                    continue
-                prices = [float(c[4]) for c in data]
-                volumes = [float(c[5]) for c in data]
-                logger.info(
-                    f"Got {len(prices)} candles for {symbol}/{interval}"
-                )
-                cache_set(
-                    cache_key,
-                    {"prices": prices, "volumes": volumes},
-                    ttl=300,
-                )
-                return prices, volumes
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                None,
+                functools.partial(_fetch_sync, url, params)
+            )
+
+            if not isinstance(data, list) or len(data) == 0:
+                continue
+
+            prices = [float(c[4]) for c in data]
+            volumes = [float(c[5]) for c in data]
+            logger.info(
+                f"Got {len(prices)} candles for {symbol}/{interval}"
+            )
+            cache_set(
+                cache_key,
+                {"prices": prices, "volumes": volumes},
+                ttl=300,
+            )
+            return prices, volumes
+
         except Exception as e:
             logger.error(
                 f"Kline fetch failed {url} {symbol}/{interval}: {e}"
             )
             continue
 
-    # Fallback to stale cached data
     if cached:
-        logger.warning(f"Using stale kline data for {symbol}/{interval}")
+        logger.warning(
+            f"Using stale kline data for {symbol}/{interval}"
+        )
         return cached["prices"], cached["volumes"]
 
+    logger.error(f"All Binance URLs failed for {symbol}/{interval}")
     return [], []
 
 
-
-
-# -----------------------------------------
-# FIX 7: Async bulk market data fetcher
-# -----------------------------------------
+# ─────────────────────────────────────────
+# BULK MARKET DATA FETCHER
+# ─────────────────────────────────────────
 async def fetch_all_market_data(coin: str) -> dict:
-    """
-    FIX 7: Fetches 1h, 4h, 1d kline data concurrently using asyncio.gather.
-    Returns dict keyed by timeframe with prices and volumes.
-    """
     cache_key = f"market_data_all:{coin}"
     cached = cache_get(cache_key)
     if cached:
@@ -100,9 +109,9 @@ async def fetch_all_market_data(coin: str) -> dict:
     return market_data
 
 
-# -----------------------------------------
-# PURE MATH HELPERS (unchanged logic)
-# -----------------------------------------
+# ─────────────────────────────────────────
+# PURE MATH HELPERS
+# ─────────────────────────────────────────
 def volatility(prices: list, period: int = 20) -> float:
     if len(prices) < period:
         return 0.0
@@ -157,7 +166,6 @@ async def calculate_score_for_timeframe(
     interval: str,
     market_data: dict = None,
 ) -> Optional[dict]:
-    """FIX 7: Async. Accepts optional pre-fetched market_data."""
     if market_data and interval in market_data:
         prices = market_data[interval]["prices"]
         volumes = market_data[interval]["volumes"]
@@ -198,9 +206,9 @@ async def calculate_score_for_timeframe(
     }
 
 
-# -----------------------------------------
+# ─────────────────────────────────────────
 # REGIME ALIGNMENT ENGINE
-# -----------------------------------------
+# ─────────────────────────────────────────
 def regime_alignment(labels: list) -> float:
     scores = [settings.REGIME_NUMERIC.get(l, 0) for l in labels]
     if not scores:
@@ -219,9 +227,9 @@ def alignment_direction(labels: list) -> str:
     return "mixed"
 
 
-# -----------------------------------------
+# ─────────────────────────────────────────
 # STATISTICS ENGINE
-# -----------------------------------------
+# ─────────────────────────────────────────
 def get_history(db: Session, coin: str, timeframe: str = "1h"):
     return (
         db.query(MarketSummary)
@@ -417,9 +425,9 @@ def exposure_recommendation_stacked(
     return round(max(5.0, min(95.0, exposure * 100)), 2)
 
 
-# -----------------------------------------
+# ─────────────────────────────────────────
 # REGIME STACK BUILDER
-# -----------------------------------------
+# ─────────────────────────────────────────
 def build_regime_stack(coin: str, db: Session) -> dict:
     stack = {}
     labels = []
@@ -494,541 +502,10 @@ def build_regime_stack(coin: str, db: Session) -> dict:
     }
 
 
-# -----------------------------------------
-# MARKET BREADTH
-# -----------------------------------------
-def compute_market_breadth(db: Session) -> dict:
-    bullish = neutral = bearish = 0
-    for coin in settings.SUPPORTED_COINS:
-        record = (
-            db.query(MarketSummary)
-            .filter(
-                MarketSummary.coin == coin,
-                MarketSummary.timeframe == "1d",
-            )
-            .order_by(MarketSummary.created_at.desc())
-            .first()
-        )
-        if not record:
-            continue
-        n = settings.REGIME_NUMERIC.get(record.label, 0)
-        if n > 0:
-            bullish += 1
-        elif n < 0:
-            bearish += 1
-        else:
-            neutral += 1
-
-    total = bullish + neutral + bearish
-    if total == 0:
-        return {
-            "bullish": 0, "neutral": 0, "bearish": 0,
-            "total": 0, "breadth_score": 0,
-        }
-    return {
-        "bullish": bullish,
-        "neutral": neutral,
-        "bearish": bearish,
-        "total": total,
-        "breadth_score": round(
-            ((bullish - bearish) / total) * 100, 2
-        ),
-    }
-
-
-# -----------------------------------------
-# VOLATILITY ENVIRONMENT
-# -----------------------------------------
-async def volatility_environment(
-    coin: str,
-    db: Session,
-    market_data: dict = None,
-) -> Optional[dict]:
-    if market_data:
-        prices_1h = market_data.get("1h", {}).get("prices", [])
-        volumes_1h = market_data.get("1h", {}).get("volumes", [])
-        prices_1d = market_data.get("1d", {}).get("prices", [])
-    else:
-        prices_1h, volumes_1h = await get_klines(coin, "1h", limit=48)
-        prices_1d, _ = await get_klines(coin, "1d", limit=30)
-
-    if not prices_1h or not prices_1d:
-        return None
-
-    vol_1h = volatility(prices_1h, period=min(24, len(prices_1h)))
-    vol_1d = volatility(prices_1d, period=min(20, len(prices_1d)))
-    vol_ratio = vol_1h / (vol_1d + 0.0001)
-
-    if vol_ratio > 1.5:
-        vol_label, vol_score = "Extreme", 90
-    elif vol_ratio > 1.0:
-        vol_label, vol_score = "Elevated", 65
-    elif vol_ratio > 0.5:
-        vol_label, vol_score = "Moderate", 40
-    else:
-        vol_label, vol_score = "Low", 15
-
-    if len(prices_1h) >= 24:
-        rets = [
-            (prices_1h[i] - prices_1h[i - 1]) / prices_1h[i - 1]
-            for i in range(1, min(24, len(prices_1h)))
-        ]
-        positive = sum(1 for r in rets if r > 0)
-        stab_pct = round((positive / len(rets)) * 100, 1)
-        stab_lbl = (
-            "Strong" if stab_pct > 65
-            else "Moderate" if stab_pct > 50
-            else "Weak" if stab_pct > 35
-            else "Deteriorating"
-        )
-    else:
-        stab_pct, stab_lbl = 50, "Insufficient data"
-
-    stress_score = round(vol_score * 0.6 + (100 - stab_pct) * 0.4, 1)
-    stress_label = (
-        "High" if stress_score > 70
-        else "Moderate" if stress_score > 40
-        else "Low"
-    )
-
-    if not volumes_1h:
-        _, volumes_1h = await get_klines(coin, "1h", limit=24)
-
-    if volumes_1h and len(volumes_1h) >= 10:
-        avg_vol = sum(volumes_1h) / len(volumes_1h)
-        recent_v = sum(volumes_1h[-6:]) / 6
-        liq_ratio = recent_v / (avg_vol + 0.0001)
-        liq_label = (
-            "High" if liq_ratio > 1.3
-            else "Normal" if liq_ratio > 0.7
-            else "Thin"
-        )
-    else:
-        liq_label = "Unknown"
-
-    return {
-        "volatility_label": vol_label,
-        "volatility_score": vol_score,
-        "stability_label": stab_lbl,
-        "stability_score": round(stab_pct, 1),
-        "stress_label": stress_label,
-        "stress_score": round(stress_score, 1),
-        "liquidity_label": liq_label,
-    }
-
-
-# -----------------------------------------
-# CORRELATION MONITOR
-# -----------------------------------------
-def compute_correlation(
-    prices_a: list,
-    prices_b: list,
-    period: int = 24,
-) -> Optional[float]:
-    if len(prices_a) < period + 1 or len(prices_b) < period + 1:
-        return None
-
-    def returns(prices):
-        return [
-            (prices[i] - prices[i - 1]) / prices[i - 1]
-            for i in range(len(prices) - period, len(prices))
-        ]
-
-    ra = returns(prices_a)
-    rb = returns(prices_b)
-    if len(ra) != len(rb):
-        return None
-    mean_a = sum(ra) / len(ra)
-    mean_b = sum(rb) / len(rb)
-    num = sum(
-        (a - mean_a) * (b - mean_b) for a, b in zip(ra, rb)
-    )
-    den_a = math.sqrt(sum((a - mean_a) ** 2 for a in ra))
-    den_b = math.sqrt(sum((b - mean_b) ** 2 for b in rb))
-    if den_a == 0 or den_b == 0:
-        return None
-    return round(num / (den_a * den_b), 3)
-
-
-async def build_correlation_matrix(
-    coins: Optional[list] = None,
-) -> dict:
-    """FIX 7: Async correlation matrix builder."""
-    coins_to_use = coins if coins else ["BTC", "ETH", "SOL"]
-    coins_to_use = [
-        c for c in coins_to_use if c in settings.SUPPORTED_COINS
-    ]
-    if len(coins_to_use) < 2:
-        coins_to_use = ["BTC", "ETH", "SOL"]
-
-    # FIX 7: Fetch all concurrently
-    tasks = [get_klines(coin, "1h", limit=50) for coin in coins_to_use]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    price_map = {}
-    for coin, result in zip(coins_to_use, results):
-        if not isinstance(result, Exception):
-            prices, _ = result
-            if prices:
-                price_map[coin] = prices
-
-    pairs = []
-    alerts = []
-    coin_list = list(price_map.keys())
-
-    for i in range(len(coin_list)):
-        for j in range(i + 1, len(coin_list)):
-            a = coin_list[i]
-            b = coin_list[j]
-            corr = compute_correlation(price_map[a], price_map[b])
-            if corr is not None:
-                abs_corr = abs(corr)
-                pairs.append({
-                    "pair": f"{a}-{b}",
-                    "correlation": corr,
-                    "label": (
-                        "Strong" if abs_corr > 0.8
-                        else "Moderate" if abs_corr > 0.5
-                        else "Weak"
-                    ),
-                })
-                if corr < 0.4:
-                    alerts.append(
-                        f"{a}-{b} correlation breakdown detected ({corr})"
-                    )
-
-    return {"pairs": pairs, "alerts": alerts}
-
-
-# -----------------------------------------
-# REGIME QUALITY + CONFIDENCE
-# -----------------------------------------
-def compute_regime_quality(stack: dict) -> dict:
-    alignment = stack.get("alignment") or 0
-    survival = stack.get("survival") or 50
-    hazard = stack.get("hazard") or 50
-    shift_risk = stack.get("shift_risk") or 50
-    coherence = 50.0
-    if stack.get("execution") and stack["execution"].get("coherence"):
-        coherence = stack["execution"]["coherence"]
-
-    score = round(
-        alignment * 0.30
-        + survival * 0.25
-        + (100 - hazard) * 0.20
-        + (100 - shift_risk) * 0.15
-        + coherence * 0.10,
-        1,
-    )
-
-    if score >= 80:
-        grade, structural, breakdown = "A", "Excellent", "Low"
-    elif score >= 65:
-        grade, structural, breakdown = "B+", "Strong", "Low-Moderate"
-    elif score >= 50:
-        grade, structural, breakdown = "B", "Healthy", "Moderate"
-    elif score >= 35:
-        grade, structural, breakdown = "C", "Weakening", "Elevated"
-    else:
-        grade, structural, breakdown = "D", "Fragile", "High"
-
-    return {
-        "grade": grade,
-        "score": score,
-        "structural": structural,
-        "breakdown": breakdown,
-    }
-
-
-def regime_confidence_score(
-    alignment: float,
-    survival: float,
-    coherence: float,
-    breadth_score: float,
-) -> dict:
-    breadth_norm = (breadth_score + 100) / 2
-    confidence = round(
-        alignment * 0.30
-        + survival * 0.25
-        + abs(coherence) * 0.25
-        + breadth_norm * 0.20,
-        1,
-    )
-    confidence = min(100, max(0, confidence))
-
-    if confidence > 75:
-        label, desc = "High", "Strong regime - elevated conviction warranted"
-    elif confidence > 50:
-        label, desc = "Moderate", "Developing regime - standard position sizing"
-    elif confidence > 30:
-        label, desc = "Low", "Weak regime - reduce size, widen stops"
-    else:
-        label, desc = "Very Low", "No clear regime - minimal exposure only"
-
-    return {
-        "score": confidence,
-        "label": label,
-        "description": desc,
-        "components": {
-            "alignment": round(alignment, 1),
-            "survival": round(survival, 1),
-            "coherence": round(abs(coherence), 1),
-            "breadth": round(breadth_norm, 1),
-        },
-    }
-
-
-# -----------------------------------------
-# REGIME TRANSITION MATRIX
-# -----------------------------------------
-def regime_transition_matrix(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> Optional[dict]:
-    records = get_history(db, coin, timeframe)
-    if len(records) < 10:
-        return None
-
-    STATES = [
-        "Strong Risk-On", "Risk-On", "Neutral",
-        "Risk-Off", "Strong Risk-Off",
-    ]
-    transitions = {s: {t: 0 for t in STATES} for s in STATES}
-
-    for i in range(len(records) - 1):
-        cur = records[i].label
-        nxt = records[i + 1].label
-        if cur in transitions and nxt in transitions:
-            transitions[cur][nxt] += 1
-
-    current_state = records[-1].label if records else "Neutral"
-    row = transitions.get(current_state, {})
-    total = sum(row.values())
-
-    if total == 0:
-        probs = {s: round(100 / len(STATES), 1) for s in STATES}
-    else:
-        probs = {
-            s: round((row.get(s, 0) / total) * 100, 1)
-            for s in STATES
-        }
-
-    sorted_probs = dict(
-        sorted(probs.items(), key=lambda x: x[1], reverse=True)
-    )
-    return {
-        "current_state": current_state,
-        "transitions": sorted_probs,
-        "sample_size": total,
-        "data_sufficient": total >= 10,
-    }
-
-
-# -----------------------------------------
-# PORTFOLIO ALLOCATOR
-# -----------------------------------------
-def portfolio_allocation(
-    account_size: float,
-    exposure_pct: float,
-    confidence_score: float,
-    strategy_mode: str = "balanced",
-) -> dict:
-    mode_mult = {
-        "conservative": 0.70,
-        "balanced": 1.00,
-        "aggressive": 1.25,
-    }
-    mult = mode_mult.get(strategy_mode, 1.0)
-    adj_exposure = min(95, exposure_pct * mult)
-    deployed = round(account_size * adj_exposure / 100, 2)
-    cash = round(account_size - deployed, 2)
-    swing_pct = 0.35 + (confidence_score / 100) * 0.25
-    spot_pct = 1 - swing_pct
-
-    return {
-        "account_size": account_size,
-        "strategy_mode": strategy_mode,
-        "adjusted_exposure": round(adj_exposure, 1),
-        "deployed_capital": deployed,
-        "cash_reserve": cash,
-        "spot_allocation": round(deployed * spot_pct, 2),
-        "swing_allocation": round(deployed * swing_pct, 2),
-        "cash_pct": round((cash / account_size) * 100, 1),
-    }
-
-
-# -----------------------------------------
-# DECISION ENGINE
-# -----------------------------------------
-def compute_decision_score(
-    hazard: float,
-    shift_risk: float,
-    alignment: float,
-    survival: float,
-    breadth_score: float,
-    maturity_pct: float,
-) -> dict:
-    breadth_norm = (breadth_score + 100) / 2
-    survival_score = survival
-    safety_score = 100 - hazard
-    shift_score = 100 - shift_risk
-    maturity_score = 100 - maturity_pct
-    breadth_bullish = breadth_norm
-
-    decision_score = round(
-        survival_score * 0.25
-        + safety_score * 0.25
-        + shift_score * 0.20
-        + alignment * 0.15
-        + maturity_score * 0.10
-        + breadth_bullish * 0.05,
-        1,
-    )
-    decision_score = min(100, max(0, decision_score))
-
-    if decision_score >= 80:
-        directive, action, color = "Increase Exposure", "aggressive", "emerald"
-        description = "All signals aligned bullish. Regime is healthy and persistent."
-        actions = [
-            "Add to existing positions on pullbacks",
-            "Increase position size toward upper band",
-            "Trail stops to lock in gains",
-            "Monitor for breadth confirmation",
-        ]
-    elif decision_score >= 60:
-        directive, action, color = "Maintain Exposure", "hold", "green"
-        description = "Regime intact. No action required. Stay the course."
-        actions = [
-            "Hold current positions",
-            "No new leverage",
-            "Monitor hazard rate for changes",
-            "Re-evaluate if shift risk exceeds 60%",
-        ]
-    elif decision_score >= 40:
-        directive, action, color = "Trim Exposure", "trim", "yellow"
-        description = "Regime showing early deterioration. Reduce risk selectively."
-        actions = [
-            "Reduce position size by 15-25%",
-            "Avoid adding new breakout entries",
-            "Take partial profits on extended positions",
-            "Tighten stop losses",
-        ]
-    elif decision_score >= 20:
-        directive, action, color = "Switch to Defensive", "defensive", "orange"
-        description = "Multiple deterioration signals active. Reduce exposure significantly."
-        actions = [
-            "Reduce exposure to lower band immediately",
-            "No new long entries",
-            "Move profits to cash or stables",
-            "Wait for regime confirmation before re-entering",
-        ]
-    else:
-        directive, action, color = "Risk-Off - Exit", "exit", "red"
-        description = "Regime breakdown in progress. Capital preservation is the priority."
-        actions = [
-            "Exit or heavily reduce all positions",
-            "Move to maximum cash allocation",
-            "Do not average down",
-            "Wait for full regime reset before re-entry",
-        ]
-
-    return {
-        "score": decision_score,
-        "directive": directive,
-        "action": action,
-        "color": color,
-        "description": description,
-        "actions": actions,
-        "components": {
-            "survival": round(survival_score, 1),
-            "safety": round(safety_score, 1),
-            "shift": round(shift_score, 1),
-            "alignment": round(alignment, 1),
-            "maturity": round(maturity_score, 1),
-            "breadth": round(breadth_bullish, 1),
-        },
-    }
-
-
-# -----------------------------------------
-# UPDATE MARKET ENTRY
-# -----------------------------------------
-async def get_klines(symbol: str, interval: str, limit: int = 120):
-    """
-    Fetches kline data from Binance.
-    Uses requests (sync) in a thread pool to avoid blocking
-    while keeping the async interface.
-    Matches the original working implementation.
-    """
-    import asyncio
-    import functools
-
-    cache_key = f"klines:{symbol}:{interval}:{limit}"
-    cached = cache_get(cache_key)
-
-    urls = [
-    "[api.binance.com](https://api.binance.com/api/v3/klines)",
-    "[api.binance.us](https://api.binance.us/api/v3/klines)",
-    ]
-    params = {
-        "symbol": f"{symbol}USDT",
-        "interval": interval,
-        "limit": limit,
-    }
-
-    def _fetch_sync(url: str, params: dict):
-        """Synchronous fetch — runs in thread pool."""
-        import requests as _requests
-        r = _requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        return r.json()
-
-    for url in urls:
-        try:
-            # Run sync requests in thread pool to not block event loop
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(
-                None,
-                functools.partial(_fetch_sync, url, params)
-            )
-
-            if not isinstance(data, list) or len(data) == 0:
-                continue
-
-            prices = [float(c[4]) for c in data]
-            volumes = [float(c[5]) for c in data]
-            logger.info(
-                f"Got {len(prices)} candles for {symbol}/{interval}"
-            )
-            cache_set(
-                cache_key,
-                {"prices": prices, "volumes": volumes},
-                ttl=300,
-            )
-            return prices, volumes
-
-        except Exception as e:
-            logger.error(
-                f"Kline fetch failed {url} {symbol}/{interval}: {e}"
-            )
-            continue
-
-    # Fallback to stale cached data
-    if cached:
-        logger.warning(
-            f"Using stale kline data for {symbol}/{interval}"
-        )
-        return cached["prices"], cached["volumes"]
-
-    logger.error(f"All Binance URLs failed for {symbol}/{interval}")
-    return [], []
-
-
-
+# ─────────────────────────────────────────
+# BULK REGIME STACK — N+1 fix
+# ─────────────────────────────────────────
 def build_regime_stack_bulk(coins: list, db: Session) -> dict:
-    """
-    Fetches regime data for ALL coins in 3 DB queries total.
-    Use this instead of calling build_regime_stack in a loop.
-    """
     from sqlalchemy import func
 
     stacks_raw = {}
@@ -1134,13 +611,469 @@ def build_regime_stack_bulk(coins: list, db: Session) -> dict:
 
     return result
 
+
+# ─────────────────────────────────────────
+# MARKET BREADTH
+# ─────────────────────────────────────────
+def compute_market_breadth(db: Session) -> dict:
+    bullish = neutral = bearish = 0
+    for coin in settings.SUPPORTED_COINS:
+        record = (
+            db.query(MarketSummary)
+            .filter(
+                MarketSummary.coin == coin,
+                MarketSummary.timeframe == "1d",
+            )
+            .order_by(MarketSummary.created_at.desc())
+            .first()
+        )
+        if not record:
+            continue
+        n = settings.REGIME_NUMERIC.get(record.label, 0)
+        if n > 0:
+            bullish += 1
+        elif n < 0:
+            bearish += 1
+        else:
+            neutral += 1
+
+    total = bullish + neutral + bearish
+    if total == 0:
+        return {
+            "bullish": 0, "neutral": 0, "bearish": 0,
+            "total": 0, "breadth_score": 0,
+        }
+    return {
+        "bullish": bullish,
+        "neutral": neutral,
+        "bearish": bearish,
+        "total": total,
+        "breadth_score": round(
+            ((bullish - bearish) / total) * 100, 2
+        ),
+    }
+
+
+# ─────────────────────────────────────────
+# VOLATILITY ENVIRONMENT
+# ─────────────────────────────────────────
+async def volatility_environment(
+    coin: str,
+    db: Session,
+    market_data: dict = None,
+) -> Optional[dict]:
+    if market_data:
+        prices_1h = market_data.get("1h", {}).get("prices", [])
+        volumes_1h = market_data.get("1h", {}).get("volumes", [])
+        prices_1d = market_data.get("1d", {}).get("prices", [])
+    else:
+        prices_1h, volumes_1h = await get_klines(coin, "1h", limit=48)
+        prices_1d, _ = await get_klines(coin, "1d", limit=30)
+
+    if not prices_1h or not prices_1d:
+        return None
+
+    vol_1h = volatility(prices_1h, period=min(24, len(prices_1h)))
+    vol_1d = volatility(prices_1d, period=min(20, len(prices_1d)))
+    vol_ratio = vol_1h / (vol_1d + 0.0001)
+
+    if vol_ratio > 1.5:
+        vol_label, vol_score = "Extreme", 90
+    elif vol_ratio > 1.0:
+        vol_label, vol_score = "Elevated", 65
+    elif vol_ratio > 0.5:
+        vol_label, vol_score = "Moderate", 40
+    else:
+        vol_label, vol_score = "Low", 15
+
+    if len(prices_1h) >= 24:
+        rets = [
+            (prices_1h[i] - prices_1h[i - 1]) / prices_1h[i - 1]
+            for i in range(1, min(24, len(prices_1h)))
+        ]
+        positive = sum(1 for r in rets if r > 0)
+        stab_pct = round((positive / len(rets)) * 100, 1)
+        stab_lbl = (
+            "Strong" if stab_pct > 65
+            else "Moderate" if stab_pct > 50
+            else "Weak" if stab_pct > 35
+            else "Deteriorating"
+        )
+    else:
+        stab_pct, stab_lbl = 50, "Insufficient data"
+
+    stress_score = round(vol_score * 0.6 + (100 - stab_pct) * 0.4, 1)
+    stress_label = (
+        "High" if stress_score > 70
+        else "Moderate" if stress_score > 40
+        else "Low"
+    )
+
+    if not volumes_1h:
+        _, volumes_1h = await get_klines(coin, "1h", limit=24)
+
+    if volumes_1h and len(volumes_1h) >= 10:
+        avg_vol = sum(volumes_1h) / len(volumes_1h)
+        recent_v = sum(volumes_1h[-6:]) / 6
+        liq_ratio = recent_v / (avg_vol + 0.0001)
+        liq_label = (
+            "High" if liq_ratio > 1.3
+            else "Normal" if liq_ratio > 0.7
+            else "Thin"
+        )
+    else:
+        liq_label = "Unknown"
+
+    return {
+        "volatility_label": vol_label,
+        "volatility_score": vol_score,
+        "stability_label": stab_lbl,
+        "stability_score": round(stab_pct, 1),
+        "stress_label": stress_label,
+        "stress_score": round(stress_score, 1),
+        "liquidity_label": liq_label,
+    }
+
+
+# ─────────────────────────────────────────
+# CORRELATION MONITOR
+# ─────────────────────────────────────────
+def compute_correlation(
+    prices_a: list,
+    prices_b: list,
+    period: int = 24,
+) -> Optional[float]:
+    if len(prices_a) < period + 1 or len(prices_b) < period + 1:
+        return None
+
+    def returns(prices):
+        return [
+            (prices[i] - prices[i - 1]) / prices[i - 1]
+            for i in range(len(prices) - period, len(prices))
+        ]
+
+    ra = returns(prices_a)
+    rb = returns(prices_b)
+    if len(ra) != len(rb):
+        return None
+    mean_a = sum(ra) / len(ra)
+    mean_b = sum(rb) / len(rb)
+    num = sum(
+        (a - mean_a) * (b - mean_b) for a, b in zip(ra, rb)
+    )
+    den_a = math.sqrt(sum((a - mean_a) ** 2 for a in ra))
+    den_b = math.sqrt(sum((b - mean_b) ** 2 for b in rb))
+    if den_a == 0 or den_b == 0:
+        return None
+    return round(num / (den_a * den_b), 3)
+
+
+async def build_correlation_matrix(
+    coins: Optional[list] = None,
+) -> dict:
+    coins_to_use = coins if coins else ["BTC", "ETH", "SOL"]
+    coins_to_use = [
+        c for c in coins_to_use if c in settings.SUPPORTED_COINS
+    ]
+    if len(coins_to_use) < 2:
+        coins_to_use = ["BTC", "ETH", "SOL"]
+
+    tasks = [get_klines(coin, "1h", limit=50) for coin in coins_to_use]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    price_map = {}
+    for coin, result in zip(coins_to_use, results):
+        if not isinstance(result, Exception):
+            prices, _ = result
+            if prices:
+                price_map[coin] = prices
+
+    pairs = []
+    alerts = []
+    coin_list = list(price_map.keys())
+
+    for i in range(len(coin_list)):
+        for j in range(i + 1, len(coin_list)):
+            a = coin_list[i]
+            b = coin_list[j]
+            corr = compute_correlation(price_map[a], price_map[b])
+            if corr is not None:
+                abs_corr = abs(corr)
+                pairs.append({
+                    "pair": f"{a}-{b}",
+                    "correlation": corr,
+                    "label": (
+                        "Strong" if abs_corr > 0.8
+                        else "Moderate" if abs_corr > 0.5
+                        else "Weak"
+                    ),
+                })
+                if corr < 0.4:
+                    alerts.append(
+                        f"{a}-{b} correlation breakdown detected ({corr})"
+                    )
+
+    return {"pairs": pairs, "alerts": alerts}
+
+
+# ─────────────────────────────────────────
+# REGIME QUALITY + CONFIDENCE
+# ─────────────────────────────────────────
+def compute_regime_quality(stack: dict) -> dict:
+    alignment = stack.get("alignment") or 0
+    survival = stack.get("survival") or 50
+    hazard = stack.get("hazard") or 50
+    shift_risk = stack.get("shift_risk") or 50
+    coherence = 50.0
+    if stack.get("execution") and stack["execution"].get("coherence"):
+        coherence = stack["execution"]["coherence"]
+
+    score = round(
+        alignment * 0.30
+        + survival * 0.25
+        + (100 - hazard) * 0.20
+        + (100 - shift_risk) * 0.15
+        + coherence * 0.10,
+        1,
+    )
+
+    if score >= 80:
+        grade, structural, breakdown = "A", "Excellent", "Low"
+    elif score >= 65:
+        grade, structural, breakdown = "B+", "Strong", "Low-Moderate"
+    elif score >= 50:
+        grade, structural, breakdown = "B", "Healthy", "Moderate"
+    elif score >= 35:
+        grade, structural, breakdown = "C", "Weakening", "Elevated"
+    else:
+        grade, structural, breakdown = "D", "Fragile", "High"
+
+    return {
+        "grade": grade,
+        "score": score,
+        "structural": structural,
+        "breakdown": breakdown,
+    }
+
+
+def regime_confidence_score(
+    alignment: float,
+    survival: float,
+    coherence: float,
+    breadth_score: float,
+) -> dict:
+    breadth_norm = (breadth_score + 100) / 2
+    confidence = round(
+        alignment * 0.30
+        + survival * 0.25
+        + abs(coherence) * 0.25
+        + breadth_norm * 0.20,
+        1,
+    )
+    confidence = min(100, max(0, confidence))
+
+    if confidence > 75:
+        label, desc = "High", "Strong regime - elevated conviction warranted"
+    elif confidence > 50:
+        label, desc = "Moderate", "Developing regime - standard position sizing"
+    elif confidence > 30:
+        label, desc = "Low", "Weak regime - reduce size, widen stops"
+    else:
+        label, desc = "Very Low", "No clear regime - minimal exposure only"
+
+    return {
+        "score": confidence,
+        "label": label,
+        "description": desc,
+        "components": {
+            "alignment": round(alignment, 1),
+            "survival": round(survival, 1),
+            "coherence": round(abs(coherence), 1),
+            "breadth": round(breadth_norm, 1),
+        },
+    }
+
+
+# ─────────────────────────────────────────
+# REGIME TRANSITION MATRIX
+# ─────────────────────────────────────────
+def regime_transition_matrix(
+    db: Session, coin: str, timeframe: str = "1h"
+) -> Optional[dict]:
+    records = get_history(db, coin, timeframe)
+    if len(records) < 10:
+        return None
+
+    STATES = [
+        "Strong Risk-On", "Risk-On", "Neutral",
+        "Risk-Off", "Strong Risk-Off",
+    ]
+    transitions = {s: {t: 0 for t in STATES} for s in STATES}
+
+    for i in range(len(records) - 1):
+        cur = records[i].label
+        nxt = records[i + 1].label
+        if cur in transitions and nxt in transitions:
+            transitions[cur][nxt] += 1
+
+    current_state = records[-1].label if records else "Neutral"
+    row = transitions.get(current_state, {})
+    total = sum(row.values())
+
+    if total == 0:
+        probs = {s: round(100 / len(STATES), 1) for s in STATES}
+    else:
+        probs = {
+            s: round((row.get(s, 0) / total) * 100, 1)
+            for s in STATES
+        }
+
+    sorted_probs = dict(
+        sorted(probs.items(), key=lambda x: x[1], reverse=True)
+    )
+    return {
+        "current_state": current_state,
+        "transitions": sorted_probs,
+        "sample_size": total,
+        "data_sufficient": total >= 10,
+    }
+
+
+# ─────────────────────────────────────────
+# PORTFOLIO ALLOCATOR
+# ─────────────────────────────────────────
+def portfolio_allocation(
+    account_size: float,
+    exposure_pct: float,
+    confidence_score: float,
+    strategy_mode: str = "balanced",
+) -> dict:
+    mode_mult = {
+        "conservative": 0.70,
+        "balanced": 1.00,
+        "aggressive": 1.25,
+    }
+    mult = mode_mult.get(strategy_mode, 1.0)
+    adj_exposure = min(95, exposure_pct * mult)
+    deployed = round(account_size * adj_exposure / 100, 2)
+    cash = round(account_size - deployed, 2)
+    swing_pct = 0.35 + (confidence_score / 100) * 0.25
+    spot_pct = 1 - swing_pct
+
+    return {
+        "account_size": account_size,
+        "strategy_mode": strategy_mode,
+        "adjusted_exposure": round(adj_exposure, 1),
+        "deployed_capital": deployed,
+        "cash_reserve": cash,
+        "spot_allocation": round(deployed * spot_pct, 2),
+        "swing_allocation": round(deployed * swing_pct, 2),
+        "cash_pct": round((cash / account_size) * 100, 1),
+    }
+
+
+# ─────────────────────────────────────────
+# DECISION ENGINE
+# ─────────────────────────────────────────
+def compute_decision_score(
+    hazard: float,
+    shift_risk: float,
+    alignment: float,
+    survival: float,
+    breadth_score: float,
+    maturity_pct: float,
+) -> dict:
+    breadth_norm = (breadth_score + 100) / 2
+    survival_score = survival
+    safety_score = 100 - hazard
+    shift_score = 100 - shift_risk
+    maturity_score = 100 - maturity_pct
+    breadth_bullish = breadth_norm
+
+    decision_score = round(
+        survival_score * 0.25
+        + safety_score * 0.25
+        + shift_score * 0.20
+        + alignment * 0.15
+        + maturity_score * 0.10
+        + breadth_bullish * 0.05,
+        1,
+    )
+    decision_score = min(100, max(0, decision_score))
+
+    if decision_score >= 80:
+        directive, action, color = "Increase Exposure", "aggressive", "emerald"
+        description = "All signals aligned bullish. Regime is healthy and persistent."
+        actions = [
+            "Add to existing positions on pullbacks",
+            "Increase position size toward upper band",
+            "Trail stops to lock in gains",
+            "Monitor for breadth confirmation",
+        ]
+    elif decision_score >= 60:
+        directive, action, color = "Maintain Exposure", "hold", "green"
+        description = "Regime intact. No action required. Stay the course."
+        actions = [
+            "Hold current positions",
+            "No new leverage",
+            "Monitor hazard rate for changes",
+            "Re-evaluate if shift risk exceeds 60%",
+        ]
+    elif decision_score >= 40:
+        directive, action, color = "Trim Exposure", "trim", "yellow"
+        description = "Regime showing early deterioration. Reduce risk selectively."
+        actions = [
+            "Reduce position size by 15-25%",
+            "Avoid adding new breakout entries",
+            "Take partial profits on extended positions",
+            "Tighten stop losses",
+        ]
+    elif decision_score >= 20:
+        directive, action, color = "Switch to Defensive", "defensive", "orange"
+        description = "Multiple deterioration signals active. Reduce exposure significantly."
+        actions = [
+            "Reduce exposure to lower band immediately",
+            "No new long entries",
+            "Move profits to cash or stables",
+            "Wait for regime confirmation before re-entering",
+        ]
+    else:
+        directive, action, color = "Risk-Off - Exit", "exit", "red"
+        description = "Regime breakdown in progress. Capital preservation is the priority."
+        actions = [
+            "Exit or heavily reduce all positions",
+            "Move to maximum cash allocation",
+            "Do not average down",
+            "Wait for full regime reset before re-entry",
+        ]
+
+    return {
+        "score": decision_score,
+        "directive": directive,
+        "action": action,
+        "color": color,
+        "description": description,
+        "actions": actions,
+        "components": {
+            "survival": round(survival_score, 1),
+            "safety": round(safety_score, 1),
+            "shift": round(shift_score, 1),
+            "alignment": round(alignment, 1),
+            "maturity": round(maturity_score, 1),
+            "breadth": round(breadth_bullish, 1),
+        },
+    }
+
+
+# ─────────────────────────────────────────
+# UPDATE MARKET ENTRY
+# ─────────────────────────────────────────
 async def update_market(
     coin: str,
     timeframe: str,
     db: Session,
     market_data: dict = None,
 ):
-    """FIX 7: Async update with detailed error logging."""
     try:
         if market_data and timeframe in market_data:
             prices = market_data[timeframe]["prices"]
@@ -1199,4 +1132,3 @@ async def update_market(
         import traceback
         logger.error(traceback.format_exc())
         return None
-
