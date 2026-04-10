@@ -24,9 +24,8 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
     """
     cache_key = f"klines:{symbol}:{interval}:{limit}"
     cached = cache_get(cache_key)
-
-    BINANCE_BASE = "[api.binance.com](https://api.binance.com)"
-    BINANCE_US_BASE = "[api.binance.us](https://api.binance.us)"
+    BINANCE_BASE = "https://api.binance.com"
+    BINANCE_US_BASE = "https://api.binance.us"
     urls = [
     BINANCE_BASE + "/api/v3/klines",
     BINANCE_US_BASE + "/api/v3/klines",
