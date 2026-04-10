@@ -952,79 +952,76 @@ def compute_decision_score(
 # -----------------------------------------
 # UPDATE MARKET ENTRY
 # -----------------------------------------
-async def update_market(
-    coin: str,
-    timeframe: str,
-    db: Session,
-    market_data: dict = None,
-):
-    """FIX 7: Async update with detailed error logging."""
-    try:
-        # First test if we can get klines at all
-        if market_data and timeframe in market_data:
-            prices = market_data[timeframe]["prices"]
-            volumes = market_data[timeframe]["volumes"]
+async def get_klines(symbol: str, interval: str, limit: int = 120):
+    """
+    Fetches kline data from Binance.
+    Uses requests (sync) in a thread pool to avoid blocking
+    while keeping the async interface.
+    Matches the original working implementation.
+    """
+    import asyncio
+    import functools
+
+    cache_key = f"klines:{symbol}:{interval}:{limit}"
+    cached = cache_get(cache_key)
+
+    urls = [
+        "[api.binance.com](https://api.binance.com/api/v3/klines)",
+        "[api.binance.us](https://api.binance.us/api/v3/klines)",
+    ]
+    params = {
+        "symbol": f"{symbol}USDT",
+        "interval": interval,
+        "limit": limit,
+    }
+
+    def _fetch_sync(url: str, params: dict):
+        """Synchronous fetch — runs in thread pool."""
+        import requests as _requests
+        r = _requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        return r.json()
+
+    for url in urls:
+        try:
+            # Run sync requests in thread pool to not block event loop
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                None,
+                functools.partial(_fetch_sync, url, params)
+            )
+
+            if not isinstance(data, list) or len(data) == 0:
+                continue
+
+            prices = [float(c[4]) for c in data]
+            volumes = [float(c[5]) for c in data]
             logger.info(
-                f"update_market {coin}/{timeframe}: "
-                f"using pre-fetched data, {len(prices)} prices"
+                f"Got {len(prices)} candles for {symbol}/{interval}"
             )
-        else:
-            prices, volumes = await get_klines(coin, timeframe, limit=120)
-            logger.info(
-                f"update_market {coin}/{timeframe}: "
-                f"fetched {len(prices)} prices from Binance"
+            cache_set(
+                cache_key,
+                {"prices": prices, "volumes": volumes},
+                ttl=300,
             )
+            return prices, volumes
 
-        if len(prices) < 30:
-            logger.warning(
-                f"update_market {coin}/{timeframe}: "
-                f"insufficient data ({len(prices)} prices, need 30)"
+        except Exception as e:
+            logger.error(
+                f"Kline fetch failed {url} {symbol}/{interval}: {e}"
             )
-            return None
+            continue
 
-        result = await calculate_score_for_timeframe(
-            coin, timeframe, market_data=market_data
+    # Fallback to stale cached data
+    if cached:
+        logger.warning(
+            f"Using stale kline data for {symbol}/{interval}"
         )
+        return cached["prices"], cached["volumes"]
 
-        if result is None:
-            logger.warning(
-                f"update_market {coin}/{timeframe}: "
-                f"calculate_score_for_timeframe returned None"
-            )
-            return None
+    logger.error(f"All Binance URLs failed for {symbol}/{interval}")
+    return [], []
 
-        logger.info(
-            f"update_market {coin}/{timeframe}: "
-            f"score={result['score']}, label={classify(result['score'])}"
-        )
-
-        entry = MarketSummary(
-            coin=coin,
-            timeframe=timeframe,
-            score=result["score"],
-            label=classify(result["score"]),
-            coherence=result["coherence"],
-            momentum_4h=result["mom_short"],
-            momentum_24h=result["mom_long"],
-            volatility_val=result["volatility"],
-        )
-        db.add(entry)
-        db.commit()
-        db.refresh(entry)
-        logger.info(
-            f"Saved {coin}/{timeframe}: "
-            f"{entry.label} ({entry.score})"
-        )
-        return entry
-
-    except Exception as e:
-        logger.error(
-            f"update_market FAILED {coin}/{timeframe}: "
-            f"{type(e).__name__}: {e}"
-        )
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
 
 
 def build_regime_stack_bulk(coins: list, db: Session) -> dict:
