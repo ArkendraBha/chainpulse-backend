@@ -13,9 +13,9 @@ class Settings:
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     UPDATE_SECRET: str = os.getenv("UPDATE_SECRET", "changeme")
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "[chainpulse.pro](https://chainpulse.pro)")
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://chainpulse.pro")
     BACKEND_URL: str = os.getenv(
-        "BACKEND_URL", "[chainpulse-backend-2xok.onrender.com](https://chainpulse-backend-2xok.onrender.com)"
+        "BACKEND_URL", "https://chainpulse-backend-2xok.onrender.com"
     )
     RESEND_FROM_EMAIL: str = (
         os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev"
@@ -24,9 +24,9 @@ class Settings:
     TOKEN_EXPIRY_DAYS: int = 90
 
     ALLOW_ORIGINS = [
-        "[chainpulse.pro](https://chainpulse.pro)",
-        "[chainpulse.pro](https://www.chainpulse.pro)",
-        "[localhost](http://localhost:3000)",
+        "https://chainpulse.pro",
+        "https://www.chainpulse.pro",
+        "http://localhost:3000",
     ]
 
     STRIPE_PRICE_MAP = {
