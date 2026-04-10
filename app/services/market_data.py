@@ -966,8 +966,8 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
     cached = cache_get(cache_key)
 
     urls = [
-        "[api.binance.com](https://api.binance.com/api/v3/klines)",
-        "[api.binance.us](https://api.binance.us/api/v3/klines)",
+    "[api.binance.com](https://api.binance.com/api/v3/klines)",
+    "[api.binance.us](https://api.binance.us/api/v3/klines)",
     ]
     params = {
         "symbol": f"{symbol}USDT",
