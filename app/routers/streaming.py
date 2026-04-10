@@ -1,12 +1,17 @@
-# app/routers/streaming.py
-from fastapi import WebSocket, WebSocketDisconnect, Depends
-from typing import Dict, Set
+import datetime
 import asyncio
-import json
+from typing import Dict, Set
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.db.database import get_db
+
+router = APIRouter()
+
 
 class RegimeStreamManager:
     def __init__(self):
-        # Maps coin -> set of active websocket connections
         self.connections: Dict[str, Set[WebSocket]] = {}
         self._lock = asyncio.Lock()
 
@@ -22,25 +27,20 @@ class RegimeStreamManager:
             if coin in self.connections:
                 self.connections[coin].discard(websocket)
 
-    async def broadcast_regime_update(
-        self, coin: str, data: dict
-    ):
+    async def broadcast_regime_update(self, coin: str, data: dict):
         if coin not in self.connections:
             return
-
         dead_connections = set()
         for websocket in self.connections[coin].copy():
             try:
                 await websocket.send_json(data)
             except Exception:
                 dead_connections.add(websocket)
-
         async with self._lock:
             self.connections[coin] -= dead_connections
 
 
 stream_manager = RegimeStreamManager()
-router = APIRouter()
 
 
 @router.websocket("/ws/regime/{coin}")
@@ -69,7 +69,6 @@ async def regime_websocket(
     await stream_manager.connect(websocket, coin)
 
     try:
-        # Send current state immediately on connect
         from app.services.market_data import build_regime_stack
         stack = build_regime_stack(coin, db)
         await websocket.send_json({
@@ -79,17 +78,14 @@ async def regime_websocket(
             "timestamp": datetime.datetime.utcnow().isoformat(),
         })
 
-        # Keep alive with heartbeat
         while True:
             try:
-                # Wait for client ping or timeout
                 data = await asyncio.wait_for(
                     websocket.receive_text(), timeout=30
                 )
                 if data == "ping":
                     await websocket.send_text("pong")
             except asyncio.TimeoutError:
-                # Send heartbeat
                 await websocket.send_json({"type": "heartbeat"})
 
     except WebSocketDisconnect:
@@ -98,8 +94,8 @@ async def regime_websocket(
         await stream_manager.disconnect(websocket, coin)
 
 
-# Call this from your update_market function to push live updates:
 async def push_regime_update(coin: str, stack: dict):
+    """Call this from update_market to push live updates to connected clients."""
     await stream_manager.broadcast_regime_update(coin, {
         "type": "regime_update",
         "coin": coin,
