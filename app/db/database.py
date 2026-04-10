@@ -14,23 +14,22 @@ def create_db_engine():
             connect_args={"check_same_thread": False},
         )
 
-    # Neon / Supabase serverless - use NullPool
+    # Neon / Supabase / serverless PostgreSQL
     is_serverless = any(x in DATABASE_URL for x in [
-        "neon.tech", "supabase", "pooler"
+        "neon.tech",
+        "supabase",
+        "pooler",
+        "neon",
     ])
 
     if is_serverless:
+        # NullPool prevents connection exhaustion on serverless
         return create_engine(
             DATABASE_URL,
             poolclass=NullPool,
-            connect_args={
-                "sslmode": "require",
-                "connect_timeout": 10,
-                "application_name": "chainpulse",
-            },
         )
 
-    # Standard PostgreSQL
+    # Standard PostgreSQL with pooling
     return create_engine(
         DATABASE_URL,
         pool_size=5,
@@ -38,11 +37,11 @@ def create_db_engine():
         pool_pre_ping=True,
         pool_recycle=300,
         pool_timeout=30,
-        connect_args={"connect_timeout": 10},
     )
 
 
 engine = create_db_engine()
+
 SessionLocal = sessionmaker(
     bind=engine,
     autocommit=False,
