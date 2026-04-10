@@ -13,17 +13,21 @@ httpx_client = None
 
 
 def register_startup_events(app: FastAPI):
+    """
+    Registers startup and shutdown event handlers on the app.
+    Must be called AFTER app = FastAPI() is created in main.py.
+    """
 
     @app.on_event("startup")
     async def startup():
         global httpx_client
 
-        # Restore custom logging setup from root logging_config.py
+        # Restore custom logging setup
         try:
             from logging_config import setup_logging
             setup_logging()
         except Exception:
-            pass  # Falls back to default logging if not found
+            pass
 
         # FIX 7: Async httpx client lifecycle
         httpx_client = httpx.AsyncClient(timeout=10)
@@ -59,12 +63,13 @@ def register_startup_events(app: FastAPI):
 
         # FIX 6: Constant-time safe check
         if settings.UPDATE_SECRET == "changeme":
-            logger.warning("UPDATE_SECRET is default - change in production!")
+            logger.warning(
+                "UPDATE_SECRET is default - change in production!"
+            )
 
-@app.on_event("shutdown")
-async def shutdown():
-    global httpx_client
-    if httpx_client:
-        await httpx_client.aclose()
-        logger.info("httpx client closed")
-
+    @app.on_event("shutdown")
+    async def shutdown():
+        global httpx_client
+        if httpx_client:
+            await httpx_client.aclose()
+            logger.info("httpx client closed")
