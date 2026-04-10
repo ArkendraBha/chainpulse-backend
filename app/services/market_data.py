@@ -12,13 +12,11 @@ from app.db.models import MarketSummary
 
 logger = logging.getLogger("chainpulse")
 
-# -----------------------------------------
-# FIX 7: Async kline fetcher using httpx
-# -----------------------------------------
 async def get_klines(symbol: str, interval: str, limit: int = 120):
     """
-    FIX 7: Async kline fetcher using httpx.AsyncClient.
-    Cache-first with stale fallback (FIX 3.3).
+    FIX 7: Async kline fetcher using httpx.
+    Cache-first with stale fallback.
+    Uses fresh client per call to avoid stale global reference.
     """
     cache_key = f"klines:{symbol}:{interval}:{limit}"
     cached = cache_get(cache_key)
@@ -35,24 +33,24 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
 
     for url in urls:
         try:
-            client = httpx_client
-            if client is None:
-                import httpx
-                client = httpx.AsyncClient(timeout=10)
-            r = await client.get(url, params=params)
-            r.raise_for_status()
-            data = r.json()
-            if not isinstance(data, list) or len(data) == 0:
-                continue
-            prices = [float(c[4]) for c in data]
-            volumes = [float(c[5]) for c in data]
-            logger.info(f"Got {len(prices)} candles for {symbol}/{interval}")
-            cache_set(
-                cache_key,
-                {"prices": prices, "volumes": volumes},
-                ttl=300,
-            )
-            return prices, volumes
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(url, params=params)
+                r.raise_for_status()
+                data = r.json()
+                if not isinstance(data, list) or len(data) == 0:
+                    continue
+                prices = [float(c[4]) for c in data]
+                volumes = [float(c[5]) for c in data]
+                logger.info(
+                    f"Got {len(prices)} candles for {symbol}/{interval}"
+                )
+                cache_set(
+                    cache_key,
+                    {"prices": prices, "volumes": volumes},
+                    ttl=300,
+                )
+                return prices, volumes
         except Exception as e:
             logger.error(
                 f"Kline fetch failed {url} {symbol}/{interval}: {e}"
@@ -65,6 +63,8 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
         return cached["prices"], cached["volumes"]
 
     return [], []
+
+
 
 
 # -----------------------------------------

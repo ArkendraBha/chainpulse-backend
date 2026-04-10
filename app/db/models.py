@@ -4,6 +4,8 @@ from sqlalchemy import (
     DateTime, Boolean, Index,
 )
 from app.db.database import Base
+from sqlalchemy import event as sa_event
+from sqlalchemy import text as sa_text
 
 
 class MarketSummary(Base):
@@ -234,42 +236,29 @@ class IntelligenceBrief(Base):
     content_json = Column(String, default="{}")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-from sqlalchemy import event as sa_event
-from sqlalchemy import text as sa_text
-
 
 @sa_event.listens_for(Base.metadata, "after_create")
 def create_performance_indexes(target, connection, **kwargs):
-    """Creates additional indexes after table creation."""
     import logging
     logger = logging.getLogger("chainpulse")
 
     indexes = [
-        """
-        CREATE INDEX IF NOT EXISTS ix_users_active_tier
-        ON users (tier, last_active_at)
-        WHERE subscription_status = 'active'
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS ix_market_recent
-        ON market_summary (coin, timeframe, created_at DESC)
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS ix_exposure_email_created
-        ON exposure_logs (email, created_at DESC)
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS ix_performance_email_date
-        ON performance_entries (email, date DESC)
-        """,
+        "CREATE INDEX IF NOT EXISTS ix_users_active_tier ON users (tier, last_active_at) WHERE subscription_status = 'active'",
+        "CREATE INDEX IF NOT EXISTS ix_market_recent ON market_summary (coin, timeframe, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_exposure_email_created ON exposure_logs (email, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_performance_email_date ON performance_entries (email, date DESC)",
     ]
 
     for sql in indexes:
         try:
-            connection.execute(sa_text(sql.strip()))
-            connection.commit()
+            # Use autocommit connection to avoid transaction issues
+            with connection.engine.connect() as conn:
+                conn.execute(sa_text("COMMIT"))
+                conn.execute(sa_text(sql))
+                conn.execute(sa_text("COMMIT"))
         except Exception as e:
             logger.warning(f"Index creation skipped: {e}")
+
 
 
 
