@@ -1133,3 +1133,70 @@ def build_regime_stack_bulk(coins: list, db: Session) -> dict:
         }
 
     return result
+
+async def update_market(
+    coin: str,
+    timeframe: str,
+    db: Session,
+    market_data: dict = None,
+):
+    """FIX 7: Async update with detailed error logging."""
+    try:
+        if market_data and timeframe in market_data:
+            prices = market_data[timeframe]["prices"]
+            logger.info(
+                f"update_market {coin}/{timeframe}: "
+                f"using pre-fetched data, {len(prices)} prices"
+            )
+        else:
+            prices, volumes = await get_klines(coin, timeframe, limit=120)
+            logger.info(
+                f"update_market {coin}/{timeframe}: "
+                f"fetched {len(prices)} prices from Binance"
+            )
+
+        if len(prices) < 30:
+            logger.warning(
+                f"update_market {coin}/{timeframe}: "
+                f"insufficient data ({len(prices)} prices, need 30)"
+            )
+            return None
+
+        result = await calculate_score_for_timeframe(
+            coin, timeframe, market_data=market_data
+        )
+
+        if result is None:
+            logger.warning(
+                f"update_market {coin}/{timeframe}: "
+                f"calculate_score_for_timeframe returned None"
+            )
+            return None
+
+        entry = MarketSummary(
+            coin=coin,
+            timeframe=timeframe,
+            score=result["score"],
+            label=classify(result["score"]),
+            coherence=result["coherence"],
+            momentum_4h=result["mom_short"],
+            momentum_24h=result["mom_long"],
+            volatility_val=result["volatility"],
+        )
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        logger.info(
+            f"Saved {coin}/{timeframe}: {entry.label} ({entry.score})"
+        )
+        return entry
+
+    except Exception as e:
+        logger.error(
+            f"update_market FAILED {coin}/{timeframe}: "
+            f"{type(e).__name__}: {e}"
+        )
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
