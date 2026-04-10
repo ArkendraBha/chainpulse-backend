@@ -6,6 +6,7 @@ from sqlalchemy import text
 import traceback
 import uuid
 
+from app.routers import streaming
 from app.core.config import settings
 from app.core.startup import register_startup_events
 from app.core.logging_middleware import RequestLoggingMiddleware
@@ -51,6 +52,8 @@ app.include_router(user.router)
 app.include_router(trade.router)
 app.include_router(webhooks_router.router)
 app.include_router(admin.router)
+app.include_router(streaming.router)
+
 
 
 # ── Health check ──────────────────────────────────

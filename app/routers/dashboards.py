@@ -308,6 +308,9 @@ async def premium_dashboard(
         event_risk = compute_event_risk_overlay(coin, db, stack=stack)
     except Exception:
         event_risk = None
+    
+    from app.services.ai_narrative import generate_regime_narrative
+    narrative = await generate_regime_narrative(coin, stack, setup, scenarios, damage)
 
     try:
         durations = regime_durations(db, coin, "1h")
@@ -412,6 +415,7 @@ async def premium_dashboard(
 
     return {
         "coin": coin,
+        "ai_narrative": narrative,
         "stack": {
             "coin": stack["coin"],
             "macro": stack.get("macro"),
