@@ -431,7 +431,7 @@ def ticker(request: Request):
     symbols = [f"{c}USDT" for c in settings.SUPPORTED_COINS]
     try:
         r = requests.get(
-            "[api.binance.com](https://api.binance.com/api/v3/ticker/24hr)",
+        "[api.binance.com](https://api.binance.com/api/v3/ticker/24hr)",
             params={"symbols": json.dumps(symbols)},
             timeout=10,
         )
