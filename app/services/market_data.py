@@ -1120,6 +1120,14 @@ async def update_market(
         )
         db.add(entry)
         db.commit()
+        # Push live update to WebSocket clients
+        try:
+            from app.routers.streaming import push_regime_update
+            stack = build_regime_stack(coin, db)
+            await push_regime_update(coin, stack)
+        except Exception:
+            pass
+
         db.refresh(entry)
         logger.info(
             f"Saved {coin}/{timeframe}: {entry.label} ({entry.score})"

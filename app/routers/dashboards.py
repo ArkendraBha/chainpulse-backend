@@ -309,8 +309,15 @@ async def premium_dashboard(
     except Exception:
         event_risk = None
     
-    from app.services.ai_narrative import generate_regime_narrative
-    narrative = await generate_regime_narrative(coin, stack, setup, scenarios, damage)
+    # AI Narrative
+    try:
+        from app.services.ai_narrative import generate_regime_narrative
+        narrative = await generate_regime_narrative(
+            coin, stack, setup, scenarios, damage
+        )
+    except Exception:
+        narrative = {"available": False}
+
 
     try:
         durations = regime_durations(db, coin, "1h")
