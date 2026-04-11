@@ -35,5 +35,34 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "duration_ms": duration_ms,
             "request_id": request_id,
         }))
-
+        sensitive = [
+            "/log-exposure",
+            "/log-performance",
+            "/trade-plan",
+            "/api/v1/keys",
+            "/stripe-webhook",
+            "/save-archetype",
+            "/restore-access",
+            "/create-checkout-session",
+        ]
+        if any(request.url.path.startswith(s) for s in sensitive):
+            try:
+                from app.db.database import SessionLocal
+                from app.db.models import AuditLog
+                forwarded = request.headers.get("x-forwarded-for")
+                ip = (
+                    forwarded.split(",")[0].strip()
+                    if forwarded else "unknown"
+                )
+                db = SessionLocal()
+                db.add(AuditLog(
+                    action=request.method,
+                    endpoint=request.url.path,
+                    ip_address=ip,
+                    details=f"status={response.status_code} request_id={request_id}",
+                ))
+                db.commit()
+                db.close()
+            except Exception:
+                pass
         return response

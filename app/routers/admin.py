@@ -353,28 +353,77 @@ def churn_risk(
 
     at_risk = []
     for user in users:
+        risk_score = 0
+        reasons = []
+
+        # Never logged in
         if not user.last_active_at:
-            at_risk.append({
-                "email": user.email,
-                "risk": "critical",
-                "reason": "Never logged in",
-            })
+            risk_score += 40
+            reasons.append("Never logged in")
+
+        # Days inactive
         elif (now - user.last_active_at).days > 7:
+            days = (now - user.last_active_at).days
+            risk_score += min(40, days * 3)
+            reasons.append(f"Inactive {days} days")
+
+        # Never logged exposure
+        exposure_count = db.query(ExposureLog).filter(
+            ExposureLog.email == user.email
+        ).count()
+        if exposure_count == 0:
+            risk_score += 20
+            reasons.append("Never logged exposure")
+        elif exposure_count < 3:
+            risk_score += 10
+            reasons.append(f"Only {exposure_count} exposure logs")
+
+        # Trial ending soon
+        if user.trial_start_date:
+            days_since_trial = (now - user.trial_start_date).days
+            if 5 <= days_since_trial <= 7:
+                risk_score += 25
+                reasons.append(f"Trial day {days_since_trial}")
+
+        # Low onboarding completion
+        if (user.onboarding_step or 0) < 2:
+            risk_score += 15
+            reasons.append(f"Onboarding step {user.onboarding_step or 0}/6")
+
+        if risk_score >= 30:
+            risk_level = (
+                "critical" if risk_score >= 70
+                else "high" if risk_score >= 50
+                else "medium"
+            )
             at_risk.append({
                 "email": user.email,
-                "risk": "high",
-                "days_inactive": (now - user.last_active_at).days,
+                "tier": user.tier,
+                "risk_score": min(100, risk_score),
+                "risk_level": risk_level,
+                "reasons": reasons,
+                "days_inactive": (
+                    (now - user.last_active_at).days
+                    if user.last_active_at else None
+                ),
+                "trial_day": (
+                    (now - user.trial_start_date).days
+                    if user.trial_start_date else None
+                ),
+                "exposure_logs": exposure_count,
+                "onboarding_step": user.onboarding_step or 0,
             })
-        elif (now - user.last_active_at).days > 3:
-            at_risk.append({
-                "email": user.email,
-                "risk": "medium",
-                "days_inactive": (now - user.last_active_at).days,
-            })
+
+    at_risk.sort(key=lambda x: x["risk_score"], reverse=True)
 
     return {
         "at_risk_users": at_risk,
         "total_active": len(users),
+        "critical_count": sum(1 for u in at_risk if u["risk_level"] == "critical"),
+        "high_count": sum(1 for u in at_risk if u["risk_level"] == "high"),
+        "medium_count": sum(1 for u in at_risk if u["risk_level"] == "medium"),
+        "timestamp": datetime.datetime.utcnow().isoformat(),
     }
+
 
 

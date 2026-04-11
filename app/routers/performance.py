@@ -2,6 +2,9 @@ import json
 import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse
+import csv
+import io
 
 from app.core.config import settings
 from app.core.security import get_auth_header
@@ -414,3 +417,107 @@ def behavioral_alpha_endpoint(
     return compute_behavioral_alpha_report(email, db, lookback_days)
 
 
+
+@router.get("/export/exposure-log")
+def export_exposure_log(
+    request: Request,
+    email: str,
+    format: str = "csv",
+    db: Session = Depends(get_db),
+):
+    """Export exposure log as CSV."""
+    auth = get_auth_header(request)
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
+
+    logs = (
+        db.query(ExposureLog)
+        .filter(ExposureLog.email == email)
+        .order_by(ExposureLog.created_at.desc())
+        .limit(500)
+        .all()
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "date", "coin", "user_exposure_pct", "model_exposure_pct",
+        "delta", "regime", "hazard", "shift_risk", "followed_model",
+        "price_at_log",
+    ])
+    for log in logs:
+        writer.writerow([
+            log.created_at.strftime("%Y-%m-%d %H:%M"),
+            log.coin,
+            log.user_exposure_pct,
+            log.model_exposure_pct,
+            round((log.user_exposure_pct or 0) - (log.model_exposure_pct or 0), 1),
+            log.regime_label,
+            log.hazard_at_log,
+            log.shift_risk_at_log,
+            log.followed_model,
+            log.price_at_log,
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode()),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=exposure_log_{email}.csv"
+        },
+    )
+
+
+@router.get("/export/performance")
+def export_performance(
+    request: Request,
+    email: str,
+    coin: str = "BTC",
+    db: Session = Depends(get_db),
+):
+    """Export performance entries as CSV."""
+    auth = get_auth_header(request)
+    user_info = require_tier(auth, db, minimum_tier="essential")
+    email = require_email_ownership(user_info, email)
+
+    entries = (
+        db.query(PerformanceEntry)
+        .filter(
+            PerformanceEntry.email == email,
+            PerformanceEntry.coin == coin,
+        )
+        .order_by(PerformanceEntry.date.desc())
+        .limit(500)
+        .all()
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "date", "coin", "user_exposure_pct", "model_exposure_pct",
+        "price_open", "price_close", "user_return_pct",
+        "model_return_pct", "alpha", "regime",
+    ])
+    for e in entries:
+        writer.writerow([
+            e.date.strftime("%Y-%m-%d") if e.date else "",
+            e.coin,
+            e.user_exposure_pct,
+            e.model_exposure_pct,
+            e.price_open,
+            e.price_close,
+            e.user_return_pct,
+            e.model_return_pct,
+            round((e.user_return_pct or 0) - (e.model_return_pct or 0), 2),
+            e.regime_label,
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        io.BytesIO(output.getvalue().encode()),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=performance_{coin}_{email}.csv"
+        },
+    )

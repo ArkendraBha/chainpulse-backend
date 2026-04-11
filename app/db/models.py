@@ -260,5 +260,33 @@ def create_performance_indexes(target, connection, **kwargs):
             logger.warning(f"Index creation skipped: {e}")
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index('ix_audit_email_created', 'email', 'created_at'),
+    )
+    id = Column(Integer, primary_key=True)
+    email = Column(String, nullable=True, index=True)
+    action = Column(String)
+    endpoint = Column(String)
+    ip_address = Column(String, nullable=True)
+    tier = Column(String, nullable=True)
+    coin = Column(String, nullable=True)
+    details = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class CustomRegimeThreshold(Base):
+    __tablename__ = "custom_regime_thresholds"
+    id = Column(Integer, primary_key=True)
+    email = Column(String, index=True)
+    strong_risk_on_min = Column(Float, default=35.0)
+    risk_on_min = Column(Float, default=15.0)
+    risk_off_max = Column(Float, default=-15.0)
+    strong_risk_off_max = Column(Float, default=-35.0)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+
 
 

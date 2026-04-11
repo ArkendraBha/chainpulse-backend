@@ -314,4 +314,92 @@ def api_usage(
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
+@router.post("/api/v1/regime-thresholds")
+def set_custom_thresholds(
+    request: Request,
+    email: str,
+    strong_risk_on_min: float = 35.0,
+    risk_on_min: float = 15.0,
+    risk_off_max: float = -15.0,
+    strong_risk_off_max: float = -35.0,
+    db: Session = Depends(get_db),
+):
+    """Set custom regime classification thresholds."""
+    auth = get_auth_header(request)
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
 
+    from app.db.models import CustomRegimeThreshold
+
+    existing = db.query(CustomRegimeThreshold).filter(
+        CustomRegimeThreshold.email == email
+    ).first()
+
+    if existing:
+        existing.strong_risk_on_min = strong_risk_on_min
+        existing.risk_on_min = risk_on_min
+        existing.risk_off_max = risk_off_max
+        existing.strong_risk_off_max = strong_risk_off_max
+        existing.updated_at = datetime.datetime.utcnow()
+    else:
+        db.add(CustomRegimeThreshold(
+            email=email,
+            strong_risk_on_min=strong_risk_on_min,
+            risk_on_min=risk_on_min,
+            risk_off_max=risk_off_max,
+            strong_risk_off_max=strong_risk_off_max,
+        ))
+    db.commit()
+
+    return {
+        "status": "saved",
+        "email": email,
+        "thresholds": {
+            "strong_risk_on": f"score > {strong_risk_on_min}",
+            "risk_on": f"score > {risk_on_min}",
+            "neutral": f"{risk_off_max} to {risk_on_min}",
+            "risk_off": f"score < {risk_off_max}",
+            "strong_risk_off": f"score < {strong_risk_off_max}",
+        },
+    }
+
+
+@router.get("/api/v1/regime-thresholds")
+def get_custom_thresholds(
+    request: Request,
+    email: str,
+    db: Session = Depends(get_db),
+):
+    """Get your custom regime thresholds."""
+    auth = get_auth_header(request)
+    user_info = require_tier(auth, db, minimum_tier="institutional")
+    email = require_email_ownership(user_info, email)
+
+    from app.db.models import CustomRegimeThreshold
+
+    t = db.query(CustomRegimeThreshold).filter(
+        CustomRegimeThreshold.email == email
+    ).first()
+
+    if not t:
+        return {
+            "email": email,
+            "using_defaults": True,
+            "thresholds": {
+                "strong_risk_on_min": 35.0,
+                "risk_on_min": 15.0,
+                "risk_off_max": -15.0,
+                "strong_risk_off_max": -35.0,
+            },
+        }
+
+    return {
+        "email": email,
+        "using_defaults": False,
+        "thresholds": {
+            "strong_risk_on_min": t.strong_risk_on_min,
+            "risk_on_min": t.risk_on_min,
+            "risk_off_max": t.risk_off_max,
+            "strong_risk_off_max": t.strong_risk_off_max,
+        },
+    }

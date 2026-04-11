@@ -1055,5 +1055,95 @@ def kelly_criterion_endpoint(
         hazard=hazard,
     )
 
+@router.get("/kelly-criterion")
+def kelly_criterion_endpoint(
+    request: Request,
+    coin: str = "BTC",
+    win_rate: float = 0.55,
+    avg_win_pct: float = 3.0,
+    avg_loss_pct: float = 2.0,
+    account_size: float = 10000.0,
+    db: Session = Depends(get_db),
+):
+    """
+    Calculates Kelly Criterion optimal position size
+    adjusted for current regime conditions.
+    """
+    auth = get_auth_header(request)
+    require_tier(auth, db, minimum_tier="pro")
+
+    if not 0 < win_rate < 1:
+        raise HTTPException(400, detail="Win rate must be between 0 and 1")
+    if avg_win_pct <= 0 or avg_loss_pct <= 0:
+        raise HTTPException(400, detail="Win/loss percentages must be positive")
+
+    from app.services.market_data import build_regime_stack
+
+    stack = build_regime_stack(coin, db)
+    hazard = stack.get("hazard") or 50
+    regime_exposure = stack.get("exposure") or 50
+    exec_label = (
+        stack["execution"]["label"]
+        if stack.get("execution") else "Neutral"
+    )
+
+    # Kelly formula: f = (bp - q) / b
+    b = avg_win_pct / avg_loss_pct
+    p = win_rate
+    q = 1 - win_rate
+    full_kelly = (b * p - q) / b
+    half_kelly = full_kelly / 2
+    quarter_kelly = full_kelly / 4
+
+    # Regime adjustment
+    regime_mult = {
+        "Strong Risk-On": 1.0,
+        "Risk-On": 0.85,
+        "Neutral": 0.60,
+        "Risk-Off": 0.35,
+        "Strong Risk-Off": 0.10,
+    }.get(exec_label, 0.60)
+
+    hazard_mult = 1 - (hazard / 100) * 0.5
+    adjusted_kelly = max(0, full_kelly * regime_mult * hazard_mult)
+
+    recommendation = min(adjusted_kelly, half_kelly)
+
+    return {
+        "coin": coin,
+        "inputs": {
+            "win_rate": win_rate,
+            "avg_win_pct": avg_win_pct,
+            "avg_loss_pct": avg_loss_pct,
+            "account_size": account_size,
+        },
+        "kelly": {
+            "full_kelly_pct": round(full_kelly * 100, 2),
+            "half_kelly_pct": round(half_kelly * 100, 2),
+            "quarter_kelly_pct": round(quarter_kelly * 100, 2),
+            "regime_adjusted_pct": round(adjusted_kelly * 100, 2),
+            "recommendation_pct": round(recommendation * 100, 2),
+        },
+        "position_sizes": {
+            "full_kelly_usd": round(account_size * full_kelly, 2),
+            "half_kelly_usd": round(account_size * half_kelly, 2),
+            "recommended_usd": round(account_size * recommendation, 2),
+        },
+        "regime_context": {
+            "label": exec_label,
+            "hazard": hazard,
+            "regime_multiplier": regime_mult,
+            "hazard_multiplier": round(hazard_mult, 3),
+            "model_exposure": regime_exposure,
+        },
+        "interpretation": (
+            f"Full Kelly suggests {round(full_kelly * 100, 1)}% exposure. "
+            f"In {exec_label} with {hazard}% hazard, "
+            f"regime-adjusted recommendation is {round(recommendation * 100, 1)}%. "
+            f"Never bet full Kelly — half Kelly is standard practice."
+        ),
+        "disclaimer": "Kelly Criterion is a mathematical framework. Not financial advice.",
+    }
+
 
 
