@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import datetime
 from sqlalchemy.orm import Session
 
@@ -230,7 +230,7 @@ async def run_dynamic_alert_dispatch(db: Session) -> dict:
             alert_lines = []
             for a in filtered[:3]:
                 alert_lines.append(
-                    f"� {a.get('coin', '')} - {a.get('message', '')}"
+                    f"ï¿½ {a.get('coin', '')} - {a.get('message', '')}"
                 )
             alert_text = "<br>".join(alert_lines)
 

@@ -1,4 +1,4 @@
-import random
+﻿import random
 import math
 import datetime
 import logging
@@ -217,6 +217,6 @@ def kelly_criterion(
             f"Full Kelly: {round(full_kelly * 100, 1)}% exposure. "
             f"In {regime_label} with {hazard}% hazard, "
             f"regime-adjusted recommendation is {round(recommendation * 100, 1)}%. "
-            f"Never bet full Kelly � use half or quarter Kelly in practice."
+            f"Never bet full Kelly — use half or quarter Kelly in practice."
         ),
     }

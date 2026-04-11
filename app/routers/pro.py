@@ -1,4 +1,4 @@
-import time
+﻿import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -1140,7 +1140,7 @@ def kelly_criterion_endpoint(
             f"Full Kelly suggests {round(full_kelly * 100, 1)}% exposure. "
             f"In {exec_label} with {hazard}% hazard, "
             f"regime-adjusted recommendation is {round(recommendation * 100, 1)}%. "
-            f"Never bet full Kelly — half Kelly is standard practice."
+            f"Never bet full Kelly â€” half Kelly is standard practice."
         ),
         "disclaimer": "Kelly Criterion is a mathematical framework. Not financial advice.",
     }

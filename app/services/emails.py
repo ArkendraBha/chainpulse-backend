@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import resend
 from app.core.config import settings
 
@@ -137,8 +137,8 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
   </table>
   <p style="color:#999;margin-bottom:24px;">
     Shift Risk: <strong style="color:#f87171;">{shift_risk}%</strong>
-    &nbsp;�&nbsp; Recommended Exposure: <strong style="color:#fff;">{exposure}%</strong>
-    &nbsp;�&nbsp; Strategy: <strong style="color:#fff;">{pb['strategy_mode']}</strong>
+    &nbsp;ï¿½&nbsp; Recommended Exposure: <strong style="color:#fff;">{exposure}%</strong>
+    &nbsp;ï¿½&nbsp; Strategy: <strong style="color:#fff;">{pb['strategy_mode']}</strong>
   </p>
   <div style="border:1px solid #1f1f1f;padding:16px;margin-bottom:24px;">
     <div style="font-size:11px;color:#555;text-transform:uppercase;

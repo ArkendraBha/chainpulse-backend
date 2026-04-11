@@ -1,4 +1,4 @@
-import datetime
+ï»¿import datetime
 import logging
 from app.core.cache import cache_get, cache_set
 
@@ -64,14 +64,14 @@ async def get_funding_rates(coin: str) -> dict:
             sentiment = "bearish_contrarian"
             interpretation = (
                 f"Longs are paying {round(current_rate * 100, 3)}% per 8h. "
-                f"Overcrowded long positioning — bearish contrarian signal."
+                f"Overcrowded long positioning â€” bearish contrarian signal."
             )
         elif current_rate < -0.001:
             signal = "overleveraged_shorts"
             sentiment = "bullish_contrarian"
             interpretation = (
                 f"Shorts are paying {round(abs(current_rate) * 100, 3)}% per 8h. "
-                f"Overcrowded short positioning — bullish contrarian signal."
+                f"Overcrowded short positioning â€” bullish contrarian signal."
             )
         else:
             signal = "balanced"
@@ -147,13 +147,13 @@ async def get_open_interest(coin: str) -> dict:
             oi_signal = "increasing"
             interpretation = (
                 f"OI up {round(oi_change_pct, 1)}% in 24h. "
-                f"New money entering — trend continuation likely."
+                f"New money entering â€” trend continuation likely."
             )
         elif oi_change_pct < -5:
             oi_signal = "decreasing"
             interpretation = (
                 f"OI down {round(abs(oi_change_pct), 1)}% in 24h. "
-                f"Position unwinding — possible trend exhaustion."
+                f"Position unwinding â€” possible trend exhaustion."
             )
         else:
             oi_signal = "stable"

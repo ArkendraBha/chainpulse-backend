@@ -1,4 +1,4 @@
-import datetime
+﻿import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 import asyncio
@@ -154,7 +154,7 @@ async def run_full_update(db_factory):
                         continue
 
                     alert_lines = [
-                        f"ï¿½ {a.get('coin', '')} - {a.get('message', '')}"
+                        f"Ã¯Â¿Â½ {a.get('coin', '')} - {a.get('message', '')}"
                         for a in high_alerts[:3]
                     ]
                     alert_text = "<br>".join(alert_lines)

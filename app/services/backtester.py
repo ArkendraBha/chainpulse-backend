@@ -1,4 +1,4 @@
-import datetime
+ï»¿import datetime
 import logging
 from sqlalchemy.orm import Session
 from app.db.models import MarketSummary
@@ -35,7 +35,7 @@ def run_backtest(
     Backtests a strategy against historical regime data.
 
     Uses regime score momentum as a price proxy.
-    Results are directional estimates — not precise P&L.
+    Results are directional estimates â€” not precise P&L.
 
     Strategies:
       follow_model  - Use ChainPulse recommended exposure
@@ -252,7 +252,7 @@ def run_backtest(
         "recent_trades": trades[-10:],
         "disclaimer": (
             "Uses regime score momentum as a price proxy. "
-            "Directional estimates only — not precise P&L. "
+            "Directional estimates only â€” not precise P&L. "
             "Not financial advice."
         ),
     }

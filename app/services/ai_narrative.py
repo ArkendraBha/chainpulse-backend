@@ -1,4 +1,4 @@
-import os
+﻿import os
 import datetime
 import logging
 from app.core.cache import cache_get, cache_set
@@ -86,8 +86,8 @@ RECOMMENDED EXPOSURE: {exposure}%
 Write exactly 3 paragraphs. Be direct, data-driven, institutional in tone.
 No hedging. No disclaimers. No bullet points.
 
-Paragraph 1: Current regime assessment — what the data says and what it means for traders right now.
-Paragraph 2: Key risks — what signals are elevated, what to watch, what could invalidate the regime.
+Paragraph 1: Current regime assessment â€” what the data says and what it means for traders right now.
+Paragraph 2: Key risks â€” what signals are elevated, what to watch, what could invalidate the regime.
 Paragraph 3: Specific actionable guidance for the next 24-48 hours based on the data above.
 """
 
@@ -191,8 +191,8 @@ MARKET TONE: {tone}
 REGIME CHANGES: {changes_count}
 
 Write a 2-paragraph daily brief:
-Paragraph 1: Overall market regime summary — what the data shows across all tracked assets.
-Paragraph 2: Key focus points for traders today — what to watch and what to act on.
+Paragraph 1: Overall market regime summary â€” what the data shows across all tracked assets.
+Paragraph 2: Key focus points for traders today â€” what to watch and what to act on.
 
 Be direct and institutional. No disclaimers.
 """

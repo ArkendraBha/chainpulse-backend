@@ -1,4 +1,4 @@
-RISK_EVENTS = [
+﻿RISK_EVENTS = [
     {"name": "FOMC Meeting", "type": "macro", "impact": "High"},
     {"name": "CPI Release", "type": "macro", "impact": "High"},
     {"name": "Options Expiry", "type": "market", "impact": "Medium"},
