@@ -45,7 +45,11 @@ def register_startup_events(app: FastAPI):
             raise
 
         # FIX 10: Create tables safely
-        Base.metadata.create_all(bind=engine)
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as e:
+            logger.warning(f"create_all warning (non-critical): {e}")
+
 
         # FIX 9: Validate critical env vars
         missing = []

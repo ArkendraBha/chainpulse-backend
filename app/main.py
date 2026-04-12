@@ -28,6 +28,9 @@ app = FastAPI(
     version=settings.MODEL_VERSION,
 )
 
+from app.core.telemetry import setup_telemetry
+setup_telemetry(app)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,18 +62,104 @@ app.include_router(onchain.router)
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Health check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @app.get("/health")
-def health_check():
+async def health_check():
+    import datetime
+    import requests as _requests
     from app.db.database import engine
+    from sqlalchemy import text
+    from fastapi.responses import JSONResponse
+
+    health = {
+        "status": "healthy",
+        "version": settings.MODEL_VERSION,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "dependencies": {},
+    }
+
+    # Database
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return {
-            "status": "healthy",
-            "version": settings.MODEL_VERSION,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-        }
+        health["dependencies"]["database"] = "ok"
     except Exception as e:
-        raise HTTPException(503, detail=f"Unhealthy: {e}")
+        health["dependencies"]["database"] = f"error: {str(e)[:100]}"
+        health["status"] = "degraded"
+
+    # Binance
+    try:
+        r = _requests.get(
+            "[api.binance.com](https://api.binance.com/api/v3/ping)",
+            timeout=3,
+        )
+        health["dependencies"]["binance"] = (
+            "ok" if r.status_code == 200 else f"error: {r.status_code}"
+        )
+    except Exception as e:
+        health["dependencies"]["binance"] = f"error: {str(e)[:80]}"
+        health["status"] = "degraded"
+
+    # Cache
+    try:
+        from app.core.cache import cache_set, cache_get
+        cache_set("_health", "ok", ttl=10)
+        val = cache_get("_health")
+        health["dependencies"]["cache"] = (
+            "ok" if val == "ok" else "error: mismatch"
+        )
+    except Exception as e:
+        health["dependencies"]["cache"] = f"error: {str(e)[:80]}"
+
+    # Stripe
+    health["dependencies"]["stripe"] = (
+        "configured" if settings.STRIPE_SECRET_KEY else "not_configured"
+    )
+
+    # Resend
+    health["dependencies"]["resend"] = (
+        "configured" if settings.RESEND_API_KEY else "not_configured"
+    )
+
+    # OpenAI
+    import os
+    health["dependencies"]["openai"] = (
+        "configured" if os.getenv("OPENAI_API_KEY") else "not_configured"
+    )
+
+    # Data freshness
+    try:
+        from app.db.database import SessionLocal
+        from app.db.models import MarketSummary
+        db = SessionLocal()
+        latest = (
+            db.query(MarketSummary)
+            .order_by(MarketSummary.created_at.desc())
+            .first()
+        )
+        db.close()
+
+        if latest:
+            age_minutes = (
+                datetime.datetime.utcnow() - latest.created_at
+            ).total_seconds() / 60
+            health["dependencies"]["data_freshness"] = {
+                "status": "ok" if age_minutes < 90 else "stale",
+                "last_update_minutes_ago": round(age_minutes, 1),
+                "last_coin": latest.coin,
+                "last_timeframe": latest.timeframe,
+            }
+            if age_minutes > 90:
+                health["status"] = "degraded"
+        else:
+            health["dependencies"]["data_freshness"] = {
+                "status": "no_data",
+                "message": "No regime data yet. Run /update-all"
+            }
+    except Exception as e:
+        health["dependencies"]["data_freshness"] = f"error: {str(e)[:80]}"
+
+    status_code = 200 if health["status"] == "healthy" else 503
+    return JSONResponse(content=health, status_code=status_code)
+
 
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Global exception handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
