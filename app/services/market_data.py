@@ -43,17 +43,26 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
         r.raise_for_status()
         return r.json()
 
+        from app.core.circuit_breaker import binance_circuit, binance_us_circuit
+
+    circuit_map = {
+        "[api.binance.com](https://api.binance.com/api/v3/klines)": binance_circuit,
+        "[api.binance.us](https://api.binance.us/api/v3/klines)": binance_us_circuit,
+    }
+
     for url in urls:
+        cb = circuit_map.get(url)
+        if cb and not cb.can_attempt():
+            logger.warning(f"Circuit open for {url} - skipping")
+            continue
         try:
             loop = asyncio.get_event_loop()
             data = await loop.run_in_executor(
                 None,
                 functools.partial(_fetch_sync, url, params)
             )
-
             if not isinstance(data, list) or len(data) == 0:
                 continue
-
             prices = [float(c[4]) for c in data]
             volumes = [float(c[5]) for c in data]
             logger.info(
@@ -64,13 +73,17 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
                 {"prices": prices, "volumes": volumes},
                 ttl=300,
             )
+            if cb:
+                cb.call_succeeded()
             return prices, volumes
-
         except Exception as e:
             logger.error(
                 f"Kline fetch failed {url} {symbol}/{interval}: {e}"
             )
+            if cb:
+                cb.call_failed()
             continue
+
 
     if cached:
         logger.warning(

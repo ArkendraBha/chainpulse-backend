@@ -59,3 +59,30 @@ def get_db():
         raise
     finally:
         db.close()
+
+import os
+
+READ_REPLICA_URL = os.getenv("DATABASE_READ_URL", "")
+
+if READ_REPLICA_URL:
+    read_engine = create_engine(
+        READ_REPLICA_URL,
+        poolclass=NullPool,
+    )
+    ReadSessionLocal = sessionmaker(bind=read_engine)
+else:
+    ReadSessionLocal = SessionLocal
+
+
+def get_read_db():
+    """
+    Use for read-only GET endpoints.
+    Routes to read replica if DATABASE_READ_URL is set.
+    Falls back to primary if not configured.
+    """
+    db = ReadSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+

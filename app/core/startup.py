@@ -68,12 +68,89 @@ def register_startup_events(app: FastAPI):
         # FIX 6: Constant-time safe check
         if settings.UPDATE_SECRET == "changeme":
             logger.warning(
-                "UPDATE_SECRET is default - change in production!"
-            )
+                "UPDATE_SECRET is default - change in production!")
+        # ── CACHE WARMING ──────────────────────────
+        async def warm_cache():
+            await _asyncio.sleep(10)
+            try:
+                from app.db.database import SessionLocal
+                from app.services.market_data import (
+                    build_regime_stack,
+                    compute_market_breadth,
+                )
+                from app.core.cache import cache_set
+                from app.core.config import settings as _settings
+                db = SessionLocal()
+                breadth = compute_market_breadth(db)
+                cache_set("market_breadth", breadth, ttl=60)
+                for coin in _settings.SUPPORTED_COINS:
+                    stack = build_regime_stack(coin, db)
+                    cache_set(f"stack:{coin}", stack, ttl=60)
+                db.close()
+                logger.info("Cache warmed successfully")
+            except Exception as e:
+                logger.warning(f"Cache warming failed: {e}")
+        import asyncio as _asyncio
+        _asyncio.create_task(warm_cache())
+        # ── END CACHE WARMING ─────────────────────────────────
+        
+        async def auto_recover_stale_data():
+            await _asyncio.sleep(30)
+            try:
+                from app.db.database import SessionLocal
+                from app.db.models import MarketSummary
+                import datetime as _dt
+                db = SessionLocal()
+                latest = (
+                    db.query(MarketSummary)
+                    .order_by(MarketSummary.created_at.desc())
+                    .first()
+                )
+                db.close()
+                if not latest:
+                    logger.warning(
+                        "No data on startup - triggering auto-update"
+                    )
+                    needs_update = True
+                else:
+                    age = (
+                        _dt.datetime.utcnow() - latest.created_at
+                    ).total_seconds() / 60
+                    needs_update = age > 120
+                    if needs_update:
+                        logger.warning(
+                            f"Data is {round(age)}min old - "
+                            f"triggering auto-update"
+                        )
+                if needs_update:
+                    from app.routers.admin import run_full_update
+                    from app.db.database import SessionLocal as SL
+                    await run_full_update(SL)
+                    logger.info("Auto-recovery complete")
+            except Exception as e:
+                logger.error(f"Auto-recovery failed: {e}")
+        _asyncio.create_task(auto_recover_stale_data())
+        # ── END AUTO RECOVERY ─────────────────────────────────
 
     @app.on_event("shutdown")
     async def shutdown():
         global httpx_client
+
+        logger.info("Shutting down gracefully...")
+
+        import asyncio as _asyncio
+        await _asyncio.sleep(2)
+
         if httpx_client:
             await httpx_client.aclose()
             logger.info("httpx client closed")
+
+        try:
+            from app.db.database import engine
+            engine.dispose()
+            logger.info("Database connections closed")
+        except Exception as e:
+            logger.warning(f"DB shutdown error: {e}")
+
+        logger.info("Shutdown complete")
+

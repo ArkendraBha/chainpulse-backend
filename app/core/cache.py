@@ -1,13 +1,20 @@
-﻿import time
+﻿import os
+import time
 import threading
+
+REDIS_URL = os.getenv("REDIS_URL")
+_redis = None
+
+if REDIS_URL:
+    try:
+        import redis
+        _redis = redis.from_url(REDIS_URL, decode_responses=False)
+        _redis.ping()
+    except Exception:
+        _redis = None
 
 
 class BoundedCache:
-    """
-    FIX 8: Bounded in-memory cache with TTL and max size eviction.
-    For production at scale, replace with Redis.
-    """
-
     def __init__(self, max_size: int = 2000):
         self._data = {}
         self._lock = threading.Lock()
@@ -36,14 +43,51 @@ class BoundedCache:
             self._data.pop(key, None)
 
 
-_cache = BoundedCache(2000)
+class HybridCache:
+    """
+    Uses Redis if REDIS_URL is set, falls back to in-memory.
+    Survives server restarts when Redis is configured.
+    """
+
+    def __init__(self, max_size: int = 2000):
+        self._local = BoundedCache(max_size)
+
+    def get(self, key: str):
+        if _redis:
+            try:
+                import pickle
+                val = _redis.get(f"cp:{key}")
+                return pickle.loads(val) if val else None
+            except Exception:
+                pass
+        return self._local.get(key)
+
+    def set(self, key: str, value, ttl: int = 120):
+        if _redis:
+            try:
+                import pickle
+                _redis.setex(f"cp:{key}", ttl, pickle.dumps(value))
+                return
+            except Exception:
+                pass
+        self._local.set(key, value, ttl)
+
+    def delete(self, key: str):
+        if _redis:
+            try:
+                _redis.delete(f"cp:{key}")
+            except Exception:
+                pass
+        self._local.delete(key)
+
+
+_cache = HybridCache(2000)
 cache_get = _cache.get
 cache_set = _cache.set
 cache_delete = _cache.delete
 
 
 def get_or_compute(cache_key: str, compute_fn, ttl: int = 120, *args, **kwargs):
-    """Always check cache first, then compute and cache."""
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
@@ -51,5 +95,3 @@ def get_or_compute(cache_key: str, compute_fn, ttl: int = 120, *args, **kwargs):
     if result is not None:
         cache_set(cache_key, result, ttl=ttl)
     return result
-
-

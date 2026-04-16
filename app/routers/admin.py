@@ -109,7 +109,13 @@ async def run_full_update(db_factory):
 
         except Exception as e:
             results["errors"].append(f"Webhook dispatch: {str(e)}")
-
+        try:
+            from app.services.webhooks import requeue_failed_webhooks
+            retried = await requeue_failed_webhooks(db)
+            if retried > 0:
+                logger.info(f"Retried {retried} failed webhooks")
+        except Exception as e:
+            results["errors"].append(f"Webhook retry: {str(e)}")
         try:
             pro_users = db.query(User).filter(
                 User.subscription_status == "active",

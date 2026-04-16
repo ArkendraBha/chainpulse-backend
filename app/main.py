@@ -41,6 +41,11 @@ app.add_middleware(
 )
 app.add_middleware(RequestLoggingMiddleware)
 
+from app.core.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 register_startup_events(app)
 
@@ -98,6 +103,18 @@ async def health_check():
         health["dependencies"]["binance"] = f"unavailable: {str(e)[:50]}"
         # Do NOT mark as degraded - Binance unavailability
         # should not fail Render health check
+
+        # Circuit breaker status
+    try:
+        from app.core.circuit_breaker import (
+            binance_circuit, binance_us_circuit
+        )
+        health["dependencies"]["circuit_breakers"] = {
+            "binance": binance_circuit.get_status(),
+            "binance_us": binance_us_circuit.get_status(),
+        }
+    except Exception:
+        pass
 
     # Cache
     try:
@@ -193,3 +210,28 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={"detail": exc.detail},
         headers=getattr(exc, "headers", None) or {},
     )
+
+from app.utils.errors import AppError
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError):
+    error_id = str(uuid.uuid4())[:8]
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": True,
+            "code": exc.code,
+            "message": exc.message,
+            "details": exc.details,
+            "error_id": error_id,
+        },
+    )
+
+
+@app.get("/admin/tasks")
+def running_tasks(secret: str = ""):
+    from app.core.security import constant_time_compare
+    constant_time_compare(secret)
+    from app.core.task_queue import get_running_tasks
+    return {"tasks": get_running_tasks()}
+

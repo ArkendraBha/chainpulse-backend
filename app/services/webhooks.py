@@ -149,4 +149,62 @@ async def trigger_webhooks(
 
     return sent
 
+async def requeue_failed_webhooks(db: Session) -> int:
+    """
+    Processes dead letter queue.
+    Call from hourly cron to retry failed webhooks.
+    """
+    from app.db.models import FailedWebhookQueue
+    import datetime
+
+    now = datetime.datetime.utcnow()
+    pending = (
+        db.query(FailedWebhookQueue)
+        .filter(
+            FailedWebhookQueue.permanently_failed == False,
+            FailedWebhookQueue.next_retry_at <= now,
+            FailedWebhookQueue.attempt_count < 10,
+        )
+        .limit(50)
+        .all()
+    )
+
+    retried = 0
+    for item in pending:
+        endpoint = db.query(WebhookEndpoint).filter(
+            WebhookEndpoint.id == item.endpoint_id,
+            WebhookEndpoint.is_active == True,
+        ).first()
+
+        if not endpoint:
+            item.permanently_failed = True
+            db.commit()
+            continue
+
+        import json
+        payload = json.loads(item.payload)
+        success = await deliver_webhook(
+            endpoint, item.event_type, payload, db
+        )
+
+        item.attempt_count += 1
+        item.last_attempted_at = now
+
+        if success:
+            db.delete(item)
+        elif item.attempt_count >= 10:
+            item.permanently_failed = True
+            item.error_message = "Max retries exceeded"
+        else:
+            delay_minutes = 2 ** item.attempt_count
+            item.next_retry_at = now + datetime.timedelta(
+                minutes=delay_minutes
+            )
+
+        db.commit()
+        retried += 1
+
+    return retried
+
+
 

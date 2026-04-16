@@ -236,6 +236,19 @@ class IntelligenceBrief(Base):
     content_json = Column(String, default="{}")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+class FailedWebhookQueue(Base):
+    __tablename__ = "failed_webhook_queue"
+    id = Column(Integer, primary_key=True)
+    endpoint_id = Column(Integer, index=True)
+    event_type = Column(String)
+    payload = Column(String)
+    attempt_count = Column(Integer, default=0)
+    last_attempted_at = Column(DateTime, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True)
+    permanently_failed = Column(Boolean, default=False)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 @sa_event.listens_for(Base.metadata, "after_create")
 def create_performance_indexes(target, connection, **kwargs):
@@ -285,6 +298,10 @@ class CustomRegimeThreshold(Base):
     strong_risk_off_max = Column(Float, default=-35.0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+
+
 
 
 
