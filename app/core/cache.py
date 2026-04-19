@@ -8,6 +8,7 @@ _redis = None
 if REDIS_URL:
     try:
         import redis
+
         _redis = redis.from_url(REDIS_URL, decode_responses=False)
         _redis.ping()
     except Exception:
@@ -56,6 +57,7 @@ class HybridCache:
         if _redis:
             try:
                 import pickle
+
                 val = _redis.get(f"cp:{key}")
                 return pickle.loads(val) if val else None
             except Exception:
@@ -66,6 +68,7 @@ class HybridCache:
         if _redis:
             try:
                 import pickle
+
                 _redis.setex(f"cp:{key}", ttl, pickle.dumps(value))
                 return
             except Exception:

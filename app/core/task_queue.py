@@ -28,7 +28,4 @@ async def run_task(name: str, coro):
 
 
 def get_running_tasks() -> list:
-    return [
-        {"name": t.get_name(), "done": t.done()}
-        for t in _task_registry
-    ]
+    return [{"name": t.get_name(), "done": t.done()} for t in _task_registry]

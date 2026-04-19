@@ -15,12 +15,15 @@ def create_db_engine():
         )
 
     # Neon / Supabase / serverless PostgreSQL
-    is_serverless = any(x in DATABASE_URL for x in [
-        "neon.tech",
-        "supabase",
-        "pooler",
-        "neon",
-    ])
+    is_serverless = any(
+        x in DATABASE_URL
+        for x in [
+            "neon.tech",
+            "supabase",
+            "pooler",
+            "neon",
+        ]
+    )
 
     if is_serverless:
         # NullPool prevents connection exhaustion on serverless
@@ -60,6 +63,7 @@ def get_db():
     finally:
         db.close()
 
+
 import os
 
 READ_REPLICA_URL = os.getenv("DATABASE_READ_URL", "")
@@ -85,4 +89,3 @@ def get_read_db():
         yield db
     finally:
         db.close()
-

@@ -26,10 +26,7 @@ async def generate_regime_narrative(
             "reason": "OpenAI API key not configured",
         }
 
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     hazard = stack.get("hazard") or 50
     shift_risk = stack.get("shift_risk") or 50
     exposure = stack.get("exposure") or 50
@@ -51,18 +48,13 @@ async def generate_regime_narrative(
     chase_risk = setup.get("chase_risk") if setup else None
     entry_mode = setup.get("entry_mode") if setup else None
     base_scenario = (
-        scenarios.get("scenarios", [{}])[0].get("outcome")
-        if scenarios else None
+        scenarios.get("scenarios", [{}])[0].get("outcome") if scenarios else None
     )
     damage_score = damage.get("internal_damage_score") if damage else None
     damage_label = damage.get("damage_label") if damage else None
 
-    macro_label = (
-        stack["macro"]["label"] if stack.get("macro") else "Unknown"
-    )
-    trend_label = (
-        stack["trend"]["label"] if stack.get("trend") else "Unknown"
-    )
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Unknown"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Unknown"
 
     context = f"""You are ChainPulse AI, an institutional crypto market analyst.
 Analyze the following quantitative regime data and write a concise professional market brief.
@@ -93,6 +85,7 @@ Paragraph 3: Specific actionable guidance for the next 24-48 hours based on the 
 
     try:
         import openai
+
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
         response = await client.chat.completions.create(
@@ -167,8 +160,7 @@ async def generate_daily_intelligence_brief(
             continue
         coin = stack.get("coin", "Unknown")
         exec_label = (
-            stack["execution"]["label"]
-            if stack.get("execution") else "Neutral"
+            stack["execution"]["label"] if stack.get("execution") else "Neutral"
         )
         shift_risk = stack.get("shift_risk") or 0
         exposure = stack.get("exposure") or 0
@@ -199,6 +191,7 @@ Be direct and institutional. No disclaimers.
 
     try:
         import openai
+
         client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
         response = await client.chat.completions.create(

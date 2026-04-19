@@ -39,14 +39,16 @@ def create_api_key(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, body.email)
 
-    existing = db.query(ApiKey).filter(
-        ApiKey.email == email,
-        ApiKey.is_active == True,
-    ).count()
-    if existing >= 3:
-        raise HTTPException(
-            400, detail="Maximum 3 active API keys per account"
+    existing = (
+        db.query(ApiKey)
+        .filter(
+            ApiKey.email == email,
+            ApiKey.is_active == True,
         )
+        .count()
+    )
+    if existing >= 3:
+        raise HTTPException(400, detail="Maximum 3 active API keys per account")
 
     key = f"cp_live_{secrets_mod.token_hex(24)}"
     api_key = ApiKey(
@@ -106,10 +108,14 @@ def revoke_api_key(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
 
-    key = db.query(ApiKey).filter(
-        ApiKey.id == key_id,
-        ApiKey.email == email,
-    ).first()
+    key = (
+        db.query(ApiKey)
+        .filter(
+            ApiKey.id == key_id,
+            ApiKey.email == email,
+        )
+        .first()
+    )
     if not key:
         raise HTTPException(404, detail="API key not found")
 
@@ -132,10 +138,7 @@ async def api_regime(
             detail=f"Unsupported coin. Choose from: {settings.SUPPORTED_COINS}",
         )
     stack = build_regime_stack(coin, db)
-    quality = (
-        compute_regime_quality(stack)
-        if not stack.get("incomplete") else None
-    )
+    quality = compute_regime_quality(stack) if not stack.get("incomplete") else None
     return {
         "coin": coin,
         "stack": stack,
@@ -157,20 +160,24 @@ def api_regime_all(
         if stack.get("incomplete"):
             continue
         quality = compute_regime_quality(stack)
-        results.append({
-            "coin": coin,
-            "macro": stack["macro"]["label"] if stack.get("macro") else None,
-            "trend": stack["trend"]["label"] if stack.get("trend") else None,
-            "execution": stack["execution"]["label"] if stack.get("execution") else None,
-            "alignment": stack.get("alignment"),
-            "direction": stack.get("direction"),
-            "exposure": stack.get("exposure"),
-            "shift_risk": stack.get("shift_risk"),
-            "hazard": stack.get("hazard"),
-            "survival": stack.get("survival"),
-            "quality_grade": quality["grade"],
-            "quality_score": quality["score"],
-        })
+        results.append(
+            {
+                "coin": coin,
+                "macro": stack["macro"]["label"] if stack.get("macro") else None,
+                "trend": stack["trend"]["label"] if stack.get("trend") else None,
+                "execution": (
+                    stack["execution"]["label"] if stack.get("execution") else None
+                ),
+                "alignment": stack.get("alignment"),
+                "direction": stack.get("direction"),
+                "exposure": stack.get("exposure"),
+                "shift_risk": stack.get("shift_risk"),
+                "hazard": stack.get("hazard"),
+                "survival": stack.get("survival"),
+                "quality_grade": quality["grade"],
+                "quality_score": quality["score"],
+            }
+        )
     return {
         "coins": results,
         "count": len(results),
@@ -243,10 +250,7 @@ async def api_decision(
         breadth_score=breadth.get("breadth_score", 0),
         maturity_pct=maturity,
     )
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     decision["regime"] = exec_label
     decision["exposure"] = stack.get("exposure", 50)
     decision["coin"] = coin
@@ -314,6 +318,7 @@ def api_usage(
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
+
 @router.post("/api/v1/regime-thresholds")
 def set_custom_thresholds(
     request: Request,
@@ -331,9 +336,11 @@ def set_custom_thresholds(
 
     from app.db.models import CustomRegimeThreshold
 
-    existing = db.query(CustomRegimeThreshold).filter(
-        CustomRegimeThreshold.email == email
-    ).first()
+    existing = (
+        db.query(CustomRegimeThreshold)
+        .filter(CustomRegimeThreshold.email == email)
+        .first()
+    )
 
     if existing:
         existing.strong_risk_on_min = strong_risk_on_min
@@ -342,13 +349,15 @@ def set_custom_thresholds(
         existing.strong_risk_off_max = strong_risk_off_max
         existing.updated_at = datetime.datetime.utcnow()
     else:
-        db.add(CustomRegimeThreshold(
-            email=email,
-            strong_risk_on_min=strong_risk_on_min,
-            risk_on_min=risk_on_min,
-            risk_off_max=risk_off_max,
-            strong_risk_off_max=strong_risk_off_max,
-        ))
+        db.add(
+            CustomRegimeThreshold(
+                email=email,
+                strong_risk_on_min=strong_risk_on_min,
+                risk_on_min=risk_on_min,
+                risk_off_max=risk_off_max,
+                strong_risk_off_max=strong_risk_off_max,
+            )
+        )
     db.commit()
 
     return {
@@ -377,9 +386,11 @@ def get_custom_thresholds(
 
     from app.db.models import CustomRegimeThreshold
 
-    t = db.query(CustomRegimeThreshold).filter(
-        CustomRegimeThreshold.email == email
-    ).first()
+    t = (
+        db.query(CustomRegimeThreshold)
+        .filter(CustomRegimeThreshold.email == email)
+        .first()
+    )
 
     if not t:
         return {

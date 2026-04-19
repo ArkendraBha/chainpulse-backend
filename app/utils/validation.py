@@ -89,7 +89,7 @@ def sanitize_string(value: str, max_length: int = 500) -> str:
     if not value:
         return value
     value = _html.escape(value)
-    value = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', value)
+    value = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", value)
     return value[:max_length].strip()
 
 
@@ -97,9 +97,8 @@ def sanitize_coin(coin: str) -> str:
     """Validates and normalizes coin symbol."""
     from app.core.config import settings
     from fastapi import HTTPException
+
     coin = coin.upper().strip()
     if coin not in settings.SUPPORTED_COINS:
-        raise HTTPException(
-            400, detail=f"Unsupported coin: {coin}"
-        )
+        raise HTTPException(400, detail=f"Unsupported coin: {coin}")
     return coin

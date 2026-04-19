@@ -32,11 +32,7 @@ def save_user_profile(
     risk_mult = mult_map.get(body.risk_identity, 1.0)
     user = db.query(User).filter(User.email == email).first()
     user_id = user.id if user else None
-    profile = (
-        db.query(UserProfile)
-        .filter(UserProfile.email == email)
-        .first()
-    )
+    profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
         profile = UserProfile(email=email, user_id=user_id)
         db.add(profile)
@@ -71,11 +67,7 @@ def get_user_profile(
     auth = get_auth_header(request)
     user_info = require_tier(auth, db, minimum_tier="essential")
     email = require_email_ownership(user_info, email)
-    profile = (
-        db.query(UserProfile)
-        .filter(UserProfile.email == email)
-        .first()
-    )
+    profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
         return {
             "exists": False,
@@ -114,21 +106,13 @@ def save_archetype_endpoint(
             400,
             detail=f"Invalid archetype. Choose from: {list(ARCHETYPE_CONFIG.keys())}",
         )
-    user_info = require_tier(
-        get_auth_header(request), db, minimum_tier="essential"
-    )
+    user_info = require_tier(get_auth_header(request), db, minimum_tier="essential")
     email = require_email_ownership(user_info, body.email)
     config = ARCHETYPE_CONFIG[body.archetype]
-    profile = (
-        db.query(UserProfile)
-        .filter(UserProfile.email == email)
-        .first()
-    )
+    profile = db.query(UserProfile).filter(UserProfile.email == email).first()
     if not profile:
         user = db.query(User).filter(User.email == email).first()
-        profile = UserProfile(
-            email=email, user_id=user.id if user else None
-        )
+        profile = UserProfile(email=email, user_id=user.id if user else None)
         db.add(profile)
     profile.risk_identity = body.archetype
     profile.risk_multiplier = config["exposure_mult"]
@@ -144,5 +128,3 @@ def save_archetype_endpoint(
         "max_hold_days": config["max_hold_days"],
         "alert_sensitivity": config["alert_sensitivity"],
     }
-
-

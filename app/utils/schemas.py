@@ -82,5 +82,3 @@ class WebhookUpdateRequest(BaseModel):
     url: Optional[str] = None
     events: Optional[str] = None
     is_active: Optional[bool] = None
-
-

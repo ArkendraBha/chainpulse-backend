@@ -14,19 +14,20 @@ def create_jwt_token(email: str, tier: str, user_id: int) -> str:
     """Creates a signed JWT token."""
     try:
         import jwt
+
         payload = {
             "sub": email,
             "tier": tier,
             "uid": user_id,
             "iat": datetime.datetime.utcnow(),
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(
-                days=JWT_EXPIRY_DAYS
-            ),
+            "exp": datetime.datetime.utcnow()
+            + datetime.timedelta(days=JWT_EXPIRY_DAYS),
         }
         return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
     except ImportError:
         logger.warning("PyJWT not installed - falling back to UUID tokens")
         import secrets
+
         return secrets.token_urlsafe(32)
 
 
@@ -36,6 +37,7 @@ def decode_jwt_token(token: str) -> Optional[dict]:
         return None
     try:
         import jwt
+
         payload = jwt.decode(
             token,
             JWT_SECRET,
@@ -60,7 +62,5 @@ def verify_token_without_db(token: str) -> Optional[dict]:
         "email": payload.get("sub"),
         "tier": payload.get("tier", "free"),
         "user_id": payload.get("uid"),
-        "is_pro": payload.get("tier") in (
-            "essential", "pro", "institutional"
-        ),
+        "is_pro": payload.get("tier") in ("essential", "pro", "institutional"),
     }

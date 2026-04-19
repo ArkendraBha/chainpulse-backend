@@ -31,16 +31,16 @@ async def run_full_update(db_factory):
                 try:
                     entry = await update_market(coin, tf, db)
                     if entry:
-                        results["updates"].append({
-                            "coin": coin,
-                            "timeframe": tf,
-                            "label": entry.label,
-                            "score": entry.score,
-                        })
+                        results["updates"].append(
+                            {
+                                "coin": coin,
+                                "timeframe": tf,
+                                "label": entry.label,
+                                "score": entry.score,
+                            }
+                        )
                 except Exception as e:
-                    results["errors"].append(
-                        f"Update {coin}/{tf}: {str(e)}"
-                    )
+                    results["errors"].append(f"Update {coin}/{tf}: {str(e)}")
 
         try:
             for coin in settings.SUPPORTED_COINS:
@@ -51,8 +51,7 @@ async def run_full_update(db_factory):
                 shift_risk = stack.get("shift_risk") or 0
                 hazard = stack.get("hazard") or 0
                 exec_label = (
-                    stack["execution"]["label"]
-                    if stack.get("execution") else "Neutral"
+                    stack["execution"]["label"] if stack.get("execution") else "Neutral"
                 )
 
                 regime_payload = {
@@ -67,9 +66,7 @@ async def run_full_update(db_factory):
                     "hazard": hazard,
                     "survival": stack.get("survival"),
                 }
-                await trigger_webhooks(
-                    "regime_change", regime_payload, db, coin=coin
-                )
+                await trigger_webhooks("regime_change", regime_payload, db, coin=coin)
 
                 if shift_risk > 65:
                     await trigger_webhooks(
@@ -87,9 +84,7 @@ async def run_full_update(db_factory):
                     )
 
                 try:
-                    setup = await compute_setup_quality(
-                        coin, db, stack=stack
-                    )
+                    setup = await compute_setup_quality(coin, db, stack=stack)
                     setup_score = setup.get("setup_quality_score") or 0
                     if setup_score >= 70:
                         await trigger_webhooks(
@@ -111,16 +106,21 @@ async def run_full_update(db_factory):
             results["errors"].append(f"Webhook dispatch: {str(e)}")
         try:
             from app.services.webhooks import requeue_failed_webhooks
+
             retried = await requeue_failed_webhooks(db)
             if retried > 0:
                 logger.info(f"Retried {retried} failed webhooks")
         except Exception as e:
             results["errors"].append(f"Webhook retry: {str(e)}")
         try:
-            pro_users = db.query(User).filter(
-                User.subscription_status == "active",
-                User.alerts_enabled == True,
-            ).all()
+            pro_users = (
+                db.query(User)
+                .filter(
+                    User.subscription_status == "active",
+                    User.alerts_enabled == True,
+                )
+                .all()
+            )
 
             for user in pro_users:
                 try:
@@ -142,19 +142,16 @@ async def run_full_update(db_factory):
 
                     if user.tier == "institutional":
                         high_alerts = [
-                            a for a in alerts
+                            a
+                            for a in alerts
                             if a.get("severity") in ("high", "medium", "positive")
                         ]
                     elif user.tier == "pro":
                         high_alerts = [
-                            a for a in alerts
-                            if a.get("severity") in ("high", "medium")
+                            a for a in alerts if a.get("severity") in ("high", "medium")
                         ]
                     else:
-                        high_alerts = [
-                            a for a in alerts
-                            if a.get("severity") == "high"
-                        ]
+                        high_alerts = [a for a in alerts if a.get("severity") == "high"]
 
                     if not high_alerts:
                         continue
@@ -165,8 +162,7 @@ async def run_full_update(db_factory):
                     ]
                     alert_text = "<br>".join(alert_lines)
                     priority_prefix = (
-                        "? Priority "
-                        if user.tier == "institutional" else ""
+                        "? Priority " if user.tier == "institutional" else ""
                     )
 
                     send_email(
@@ -190,13 +186,12 @@ async def run_full_update(db_factory):
                     db.commit()
                     results["alerts_sent"] += 1
                 except Exception as e:
-                    results["errors"].append(
-                        f"Alert {user.email}: {str(e)}"
-                    )
+                    results["errors"].append(f"Alert {user.email}: {str(e)}")
         except Exception as e:
             results["errors"].append(f"Alert dispatch: {str(e)}")
 
         import logging
+
         logging.getLogger("chainpulse").info(
             f"cron_all complete: {len(results['updates'])} updates, "
             f"{results['alerts_sent']} alerts, "
@@ -234,9 +229,11 @@ def send_what_changed_email(
     db: Session = Depends(get_db),
 ):
     from app.services.regime_engine import compute_what_changed
+
     constant_time_compare(secret)
 
     from app.services.regime_engine import get_or_compute_brief, compute_what_changed
+
     what_changed = get_or_compute_brief(
         db=db,
         brief_type="what_changed_72h",
@@ -244,17 +241,18 @@ def send_what_changed_email(
         max_age_minutes=120,
         lookback_hours=72,
     )
-    pro_users = db.query(User).filter(
-        User.subscription_status == "active",
-        User.alerts_enabled == True,
-    ).all()
+    pro_users = (
+        db.query(User)
+        .filter(
+            User.subscription_status == "active",
+            User.alerts_enabled == True,
+        )
+        .all()
+    )
 
     changes_html = ""
     for change in what_changed.get("changes", [])[:10]:
-        color = (
-            "#4ade80" if change["severity"] == "positive"
-            else "#f87171"
-        )
+        color = "#4ade80" if change["severity"] == "positive" else "#f87171"
         changes_html += f"""
         <tr>
           <td style="padding:10px 8px;border-bottom:1px solid #1f1f1f;
@@ -338,6 +336,7 @@ def send_what_changed_email(
             sent += 1
         except Exception as e:
             import logging
+
             logging.getLogger("chainpulse").error(
                 f"What Changed email failed for {user.email}: {e}"
             )
@@ -353,9 +352,7 @@ def churn_risk(
 ):
     constant_time_compare(secret)
     now = datetime.datetime.utcnow()
-    users = db.query(User).filter(
-        User.subscription_status == "active"
-    ).all()
+    users = db.query(User).filter(User.subscription_status == "active").all()
 
     at_risk = []
     for user in users:
@@ -374,9 +371,9 @@ def churn_risk(
             reasons.append(f"Inactive {days} days")
 
         # Never logged exposure
-        exposure_count = db.query(ExposureLog).filter(
-            ExposureLog.email == user.email
-        ).count()
+        exposure_count = (
+            db.query(ExposureLog).filter(ExposureLog.email == user.email).count()
+        )
         if exposure_count == 0:
             risk_score += 20
             reasons.append("Never logged exposure")
@@ -398,27 +395,31 @@ def churn_risk(
 
         if risk_score >= 30:
             risk_level = (
-                "critical" if risk_score >= 70
-                else "high" if risk_score >= 50
-                else "medium"
+                "critical"
+                if risk_score >= 70
+                else "high" if risk_score >= 50 else "medium"
             )
-            at_risk.append({
-                "email": user.email,
-                "tier": user.tier,
-                "risk_score": min(100, risk_score),
-                "risk_level": risk_level,
-                "reasons": reasons,
-                "days_inactive": (
-                    (now - user.last_active_at).days
-                    if user.last_active_at else None
-                ),
-                "trial_day": (
-                    (now - user.trial_start_date).days
-                    if user.trial_start_date else None
-                ),
-                "exposure_logs": exposure_count,
-                "onboarding_step": user.onboarding_step or 0,
-            })
+            at_risk.append(
+                {
+                    "email": user.email,
+                    "tier": user.tier,
+                    "risk_score": min(100, risk_score),
+                    "risk_level": risk_level,
+                    "reasons": reasons,
+                    "days_inactive": (
+                        (now - user.last_active_at).days
+                        if user.last_active_at
+                        else None
+                    ),
+                    "trial_day": (
+                        (now - user.trial_start_date).days
+                        if user.trial_start_date
+                        else None
+                    ),
+                    "exposure_logs": exposure_count,
+                    "onboarding_step": user.onboarding_step or 0,
+                }
+            )
 
     at_risk.sort(key=lambda x: x["risk_score"], reverse=True)
 
@@ -430,6 +431,3 @@ def churn_risk(
         "medium_count": sum(1 for u in at_risk if u["risk_level"] == "medium"),
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
-
-
-

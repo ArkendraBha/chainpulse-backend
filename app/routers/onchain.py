@@ -112,6 +112,7 @@ async def onchain_overview_endpoint(
         return cached
 
     import asyncio
+
     results = await asyncio.gather(
         *[get_combined_onchain(coin) for coin in settings.SUPPORTED_COINS],
         return_exceptions=True,

@@ -47,6 +47,7 @@ router = APIRouter()
 # UPDATE ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
+
 @router.get("/update-now")
 async def update_now(
     coin: str = "BTC",
@@ -82,12 +83,14 @@ async def update_all(
         for tf in settings.SUPPORTED_TIMEFRAMES:
             entry = await update_market(coin, tf, db)
             if entry:
-                results.append({
-                    "coin": coin,
-                    "timeframe": tf,
-                    "label": entry.label,
-                    "score": entry.score,
-                })
+                results.append(
+                    {
+                        "coin": coin,
+                        "timeframe": tf,
+                        "label": entry.label,
+                        "score": entry.score,
+                    }
+                )
     return {
         "status": "updated",
         "count": len(results),
@@ -98,6 +101,7 @@ async def update_all(
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # REGIME ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 
 @router.get("/regime-stack")
 async def regime_stack_endpoint(
@@ -118,8 +122,7 @@ async def regime_stack_endpoint(
         return {
             "coin": stack["coin"],
             "execution": (
-                {"label": stack["execution"]["label"]}
-                if stack["execution"] else None
+                {"label": stack["execution"]["label"]} if stack["execution"] else None
             ),
             "direction": stack["direction"],
             "pro_required": True,
@@ -133,9 +136,7 @@ async def regime_stack_endpoint(
     age_1h = current_age(db, coin, "1h")
     avg_dur = average_regime_duration(db, coin, "1h")
     maturity = trend_maturity_score(age_1h, avg_dur, stack["hazard"])
-    pct_rank = percentile_rank(
-        db, coin, stack["execution"]["score"], "1h"
-    )
+    pct_rank = percentile_rank(db, coin, stack["execution"]["score"], "1h")
     quality = compute_regime_quality(stack)
 
     return {
@@ -169,15 +170,12 @@ async def market_overview(
 ):
     is_pro = resolve_pro_status(get_auth_header(request), db)
     result = []
-    breadth = get_or_compute(
-        "market_breadth", compute_market_breadth, ttl=60, db=db
-    )
+    breadth = get_or_compute("market_breadth", compute_market_breadth, ttl=60, db=db)
 
     coins_to_scan = (
         settings.SUPPORTED_COINS
         if coin == "ALL"
-        else [coin] if coin in settings.SUPPORTED_COINS
-        else settings.SUPPORTED_COINS
+        else [coin] if coin in settings.SUPPORTED_COINS else settings.SUPPORTED_COINS
     )
 
     # CRITICAL 4: bulk fetch - 3 queries total instead of 3 * N
@@ -192,7 +190,9 @@ async def market_overview(
                 "coin": stack["coin"],
                 "macro": stack["macro"]["label"] if stack.get("macro") else None,
                 "trend": stack["trend"]["label"] if stack.get("trend") else None,
-                "execution": stack["execution"]["label"] if stack.get("execution") else None,
+                "execution": (
+                    stack["execution"]["label"] if stack.get("execution") else None
+                ),
                 "alignment": stack["alignment"],
                 "direction": stack["direction"],
                 "exposure": stack["exposure"],
@@ -201,7 +201,9 @@ async def market_overview(
         else:
             row = {
                 "coin": stack["coin"],
-                "execution": stack["execution"]["label"] if stack.get("execution") else None,
+                "execution": (
+                    stack["execution"]["label"] if stack.get("execution") else None
+                ),
                 "direction": stack["direction"],
                 "pro_required": True,
             }
@@ -213,9 +215,13 @@ async def market_overview(
             "breadth": {
                 "total": breadth.get("total", 0),
                 "sentiment": (
-                    "Bullish" if breadth.get("breadth_score", 0) > 30
-                    else "Bearish" if breadth.get("breadth_score", 0) < -30
-                    else "Neutral"
+                    "Bullish"
+                    if breadth.get("breadth_score", 0) > 30
+                    else (
+                        "Bearish"
+                        if breadth.get("breadth_score", 0) < -30
+                        else "Neutral"
+                    )
                 ),
                 "pro_required": True,
             },
@@ -317,6 +323,7 @@ def regime_history(
 # FREE / PUBLIC ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
+
 @router.get("/risk-events")
 def risk_events():
     return {"events": RISK_EVENTS}
@@ -325,6 +332,7 @@ def risk_events():
 @router.get("/archetypes")
 def list_archetypes():
     from app.utils.enums import ARCHETYPE_CONFIG
+
     return {
         "archetypes": {
             key: {
@@ -431,7 +439,7 @@ def ticker(request: Request):
     symbols = [f"{c}USDT" for c in settings.SUPPORTED_COINS]
     try:
         r = requests.get(
-        "https://api.binance.com/api/v3/ticker/24hr",
+            "https://api.binance.com/api/v3/ticker/24hr",
             params={"symbols": json.dumps(symbols)},
             timeout=10,
         )
@@ -439,6 +447,7 @@ def ticker(request: Request):
         return r.json()
     except Exception as e:
         import logging
+
         logging.getLogger("chainpulse").error(f"Ticker fetch failed: {e}")
         return []
 
@@ -455,10 +464,7 @@ def playbook(
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     pb = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
 
     if not is_pro:
@@ -496,6 +502,7 @@ def sample_report():
 # DEBUG ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
+
 @router.get("/debug-prices")
 async def debug_prices(
     coin: str = "BTC",
@@ -503,9 +510,8 @@ async def debug_prices(
     secret: str = "",
 ):
     import hmac as hmac_lib
-    if not hmac_lib.compare_digest(
-        secret or "", settings.UPDATE_SECRET or ""
-    ):
+
+    if not hmac_lib.compare_digest(secret or "", settings.UPDATE_SECRET or ""):
         raise HTTPException(403, detail="Unauthorized")
     prices, volumes = await get_klines(coin, interval, limit=120)
     return {
@@ -526,24 +532,21 @@ def debug_stack(
     db: Session = Depends(get_db),
 ):
     import hmac as hmac_lib
-    if not hmac_lib.compare_digest(
-        secret or "", settings.UPDATE_SECRET or ""
-    ):
+
+    if not hmac_lib.compare_digest(secret or "", settings.UPDATE_SECRET or ""):
         raise HTTPException(403, detail="Unauthorized")
     if coin not in settings.SUPPORTED_COINS:
         raise HTTPException(400, detail="Unsupported coin")
     stack = build_regime_stack(coin, db)
     breadth = compute_market_breadth(db)
-    quality = (
-        compute_regime_quality(stack)
-        if not stack["incomplete"] else None
-    )
+    quality = compute_regime_quality(stack) if not stack["incomplete"] else None
     return {"stack": stack, "breadth": breadth, "quality": quality}
 
 
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # SUBSCRIPTION ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 
 @router.post("/subscribe")
 async def subscribe(
@@ -552,6 +555,7 @@ async def subscribe(
 ):
     from app.utils.schemas import SubscribeRequest
     from app.services.emails import send_email
+
     rate_limiter.require(request, max_requests=5, window_seconds=3600)
 
     try:
@@ -653,6 +657,7 @@ async def restore_access(
 ):
     from app.utils.schemas import RestoreRequest
     from app.services.emails import send_email, welcome_email_html
+
     rate_limiter.require(request, max_requests=3, window_seconds=3600)
 
     try:
@@ -664,9 +669,7 @@ async def restore_access(
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if not user or user.subscription_status != "active":
-        raise HTTPException(
-            404, detail="No active Pro subscription found"
-        )
+        raise HTTPException(404, detail="No active Pro subscription found")
 
     # CRITICAL 1: secure token generation
     raw_token = generate_access_token()
@@ -686,6 +689,7 @@ async def restore_access(
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # STRIPE ENDPOINTS
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+
 
 @router.post("/stripe-webhook")
 async def stripe_webhook(
@@ -710,25 +714,28 @@ async def stripe_webhook(
 
     # CRITICAL 7: Idempotency check
     event_id = event["id"]
-    existing = db.query(StripeWebhookEvent).filter(
-        StripeWebhookEvent.stripe_event_id == event_id
-    ).first()
+    existing = (
+        db.query(StripeWebhookEvent)
+        .filter(StripeWebhookEvent.stripe_event_id == event_id)
+        .first()
+    )
     if existing:
         return {"status": "already_processed"}
 
-    db.add(StripeWebhookEvent(
-        stripe_event_id=event_id,
-        event_type=event_type,
-    ))
+    db.add(
+        StripeWebhookEvent(
+            stripe_event_id=event_id,
+            event_type=event_type,
+        )
+    )
     db.commit()
 
     from app.services.emails import send_email, welcome_email_html
 
     # Ã¢â€â‚¬Ã¢â€â‚¬ CHECKOUT COMPLETED Ã¢â€â‚¬Ã¢â€â‚¬
     if event_type == "checkout.session.completed":
-        customer_email = (
-            data.get("customer_details", {}).get("email")
-            or data.get("customer_email")
+        customer_email = data.get("customer_details", {}).get("email") or data.get(
+            "customer_email"
         )
         customer_id = data.get("customer")
         subscription_id = data.get("subscription")
@@ -760,9 +767,8 @@ async def stripe_webhook(
                 welcome_email_html(email, raw_token),
             )
             import logging
-            logging.getLogger("chainpulse").info(
-                f"Activated {email} on {tier} tier"
-            )
+
+            logging.getLogger("chainpulse").info(f"Activated {email} on {tier} tier")
 
     # Ã¢â€â‚¬Ã¢â€â‚¬ SUBSCRIPTION UPDATED Ã¢â€â‚¬Ã¢â€â‚¬
     elif event_type == "customer.subscription.updated":
@@ -772,13 +778,9 @@ async def stripe_webhook(
         status = subscription.get("status")
         tier = subscription.get("metadata", {}).get("tier", "pro")
 
-        user = db.query(User).filter(
-            User.stripe_subscription_id == sub_id
-        ).first()
+        user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
         if not user:
-            user = db.query(User).filter(
-                User.stripe_customer_id == customer_id
-            ).first()
+            user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
 
         if user:
             if status in ("active", "trialing"):
@@ -792,6 +794,7 @@ async def stripe_webhook(
                 user.subscription_status = "inactive"
             db.commit()
             import logging
+
             logging.getLogger("chainpulse").info(
                 f"Updated {user.email}: status={status}, tier={tier}"
             )
@@ -804,13 +807,9 @@ async def stripe_webhook(
         sub_id = data.get("id")
         customer_id = data.get("customer")
 
-        user = db.query(User).filter(
-            User.stripe_subscription_id == sub_id
-        ).first()
+        user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
         if not user:
-            user = db.query(User).filter(
-                User.stripe_customer_id == customer_id
-            ).first()
+            user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
 
         if user:
             user.subscription_status = "canceled"
@@ -819,16 +818,13 @@ async def stripe_webhook(
             user.token_created_at = None
             db.commit()
             import logging
-            logging.getLogger("chainpulse").info(
-                f"Canceled {user.email}"
-            )
+
+            logging.getLogger("chainpulse").info(f"Canceled {user.email}")
 
     # Ã¢â€â‚¬Ã¢â€â‚¬ PAYMENT FAILED Ã¢â€â‚¬Ã¢â€â‚¬
     elif event_type == "invoice.payment_failed":
         customer_id = data.get("customer")
-        user = db.query(User).filter(
-            User.stripe_customer_id == customer_id
-        ).first()
+        user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
         if user:
             user.subscription_status = "past_due"
             db.commit()
@@ -875,6 +871,7 @@ async def create_checkout_session(
         raise HTTPException(400, detail="Invalid request body")
 
     from app.utils.schemas import CheckoutRequest
+
     try:
         body = CheckoutRequest.model_validate(body_bytes)
     except Exception:
@@ -884,9 +881,7 @@ async def create_checkout_session(
         raise HTTPException(400, detail=f"Invalid tier: {body.tier}")
 
     if body.billing_cycle not in ("monthly", "annual"):
-        raise HTTPException(
-            400, detail=f"Invalid billing cycle: {body.billing_cycle}"
-        )
+        raise HTTPException(400, detail=f"Invalid billing cycle: {body.billing_cycle}")
 
     price_id = settings.STRIPE_PRICE_MAP[body.tier][body.billing_cycle]
     if not price_id:
@@ -916,21 +911,20 @@ async def create_checkout_session(
             metadata={"tier": body.tier},
             allow_promotion_codes=True,
             success_url=(
-                f"{settings.FRONTEND_URL}/app"
-                f"?success=true&tier={body.tier}"
+                f"{settings.FRONTEND_URL}/app" f"?success=true&tier={body.tier}"
             ),
-            cancel_url=(
-                f"{settings.FRONTEND_URL}/pricing?cancelled=true"
-            ),
+            cancel_url=(f"{settings.FRONTEND_URL}/pricing?cancelled=true"),
             **customer_kwargs,
         )
         return {"url": session.url, "session_id": session.id}
 
     except stripe.error.StripeError as e:
         import logging
+
         logging.getLogger("chainpulse").error(f"Stripe error: {e}")
         raise HTTPException(400, detail=str(e))
     except Exception as e:
         import logging
+
         logging.getLogger("chainpulse").error(f"Checkout error: {e}")
         raise HTTPException(500, detail="Checkout creation failed")

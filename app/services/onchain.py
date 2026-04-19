@@ -44,6 +44,7 @@ async def get_funding_rates(coin: str) -> dict:
 
     try:
         import httpx as _httpx
+
         async with _httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 "[fapi.binance.com](https://fapi.binance.com/fapi/v1/fundingRate)",
@@ -120,6 +121,7 @@ async def get_open_interest(coin: str) -> dict:
 
     try:
         import httpx as _httpx
+
         async with _httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 "[fapi.binance.com](https://fapi.binance.com/futures/data/openInterestHist)",
@@ -139,8 +141,7 @@ async def get_open_interest(coin: str) -> dict:
         current_oi_usd = oi_usd_values[-1]
 
         oi_change_pct = (
-            ((current_oi - oi_24h_ago) / oi_24h_ago) * 100
-            if oi_24h_ago > 0 else 0
+            ((current_oi - oi_24h_ago) / oi_24h_ago) * 100 if oi_24h_ago > 0 else 0
         )
 
         if oi_change_pct > 5:

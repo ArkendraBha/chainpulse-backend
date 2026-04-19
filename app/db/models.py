@@ -1,7 +1,12 @@
 ﻿import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float,
-    DateTime, Boolean, Index,
+    Column,
+    Integer,
+    String,
+    Float,
+    DateTime,
+    Boolean,
+    Index,
 )
 from app.db.database import Base
 from sqlalchemy import event as sa_event
@@ -11,10 +16,7 @@ from sqlalchemy import text as sa_text
 class MarketSummary(Base):
     __tablename__ = "market_summary"
     __table_args__ = (
-        Index(
-            'ix_market_summary_coin_tf_created',
-            'coin', 'timeframe', 'created_at'
-        ),
+        Index("ix_market_summary_coin_tf_created", "coin", "timeframe", "created_at"),
     )
     id = Column(Integer, primary_key=True)
     coin = Column(String, index=True)
@@ -63,10 +65,7 @@ class UserProfile(Base):
 class ExposureLog(Base):
     __tablename__ = "exposure_logs"
     __table_args__ = (
-        Index(
-            'ix_exposure_log_email_coin_created',
-            'email', 'coin', 'created_at'
-        ),
+        Index("ix_exposure_log_email_coin_created", "email", "coin", "created_at"),
     )
     id = Column(Integer, primary_key=True)
     email = Column(String, index=True)
@@ -84,12 +83,7 @@ class ExposureLog(Base):
 
 class PerformanceEntry(Base):
     __tablename__ = "performance_entries"
-    __table_args__ = (
-        Index(
-            'ix_performance_email_coin_date',
-            'email', 'coin', 'date'
-        ),
-    )
+    __table_args__ = (Index("ix_performance_email_coin_date", "email", "coin", "date"),)
     id = Column(Integer, primary_key=True)
     email = Column(String, index=True)
     coin = Column(String, default="BTC")
@@ -159,12 +153,14 @@ class AlertThreshold(Base):
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+
 class StripeWebhookEvent(Base):
     __tablename__ = "stripe_webhook_events"
     id = Column(Integer, primary_key=True)
     stripe_event_id = Column(String, unique=True, index=True)
     event_type = Column(String)
     processed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 class TradePlan(Base):
     __tablename__ = "trade_plans"
@@ -203,7 +199,9 @@ class WebhookEndpoint(Base):
     email = Column(String, index=True)
     url = Column(String)
     secret = Column(String, nullable=True)
-    events = Column(String, default="regime_change,shift_risk_alert,setup_quality_alert")
+    events = Column(
+        String, default="regime_change,shift_risk_alert,setup_quality_alert"
+    )
     is_active = Column(Boolean, default=True)
     last_triggered_at = Column(DateTime, nullable=True)
     failure_count = Column(Integer, default=0)
@@ -213,10 +211,7 @@ class WebhookEndpoint(Base):
 class WebhookDelivery(Base):
     __tablename__ = "webhook_deliveries"
     __table_args__ = (
-        Index(
-            'ix_webhook_delivery_endpoint_created',
-            'endpoint_id', 'created_at'
-        ),
+        Index("ix_webhook_delivery_endpoint_created", "endpoint_id", "created_at"),
     )
     id = Column(Integer, primary_key=True)
     endpoint_id = Column(Integer, index=True)
@@ -236,6 +231,7 @@ class IntelligenceBrief(Base):
     content_json = Column(String, default="{}")
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
+
 class FailedWebhookQueue(Base):
     __tablename__ = "failed_webhook_queue"
     id = Column(Integer, primary_key=True)
@@ -253,6 +249,7 @@ class FailedWebhookQueue(Base):
 @sa_event.listens_for(Base.metadata, "after_create")
 def create_performance_indexes(target, connection, **kwargs):
     import logging
+
     logger = logging.getLogger("chainpulse")
 
     indexes = [
@@ -275,9 +272,7 @@ def create_performance_indexes(target, connection, **kwargs):
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
-    __table_args__ = (
-        Index('ix_audit_email_created', 'email', 'created_at'),
-    )
+    __table_args__ = (Index("ix_audit_email_created", "email", "created_at"),)
     id = Column(Integer, primary_key=True)
     email = Column(String, nullable=True, index=True)
     action = Column(String)
@@ -287,6 +282,7 @@ class AuditLog(Base):
     coin = Column(String, nullable=True)
     details = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 class CustomRegimeThreshold(Base):
     __tablename__ = "custom_regime_thresholds"
@@ -298,12 +294,3 @@ class CustomRegimeThreshold(Base):
     strong_risk_off_max = Column(Float, default=-35.0)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow)
-
-
-
-
-
-
-
-
-

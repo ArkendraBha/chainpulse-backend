@@ -6,6 +6,10 @@ from sqlalchemy import text
 import traceback
 import uuid
 
+from fastapi import APIRouter, Depends, Query
+from typing import Optional
+import os
+
 from app.routers import streaming
 from app.routers import onchain
 from app.core.config import settings
@@ -29,6 +33,7 @@ app = FastAPI(
 )
 
 from app.core.telemetry import setup_telemetry
+
 setup_telemetry(app)
 
 
@@ -42,9 +47,11 @@ app.add_middleware(
 app.add_middleware(RequestLoggingMiddleware)
 
 from app.core.security_headers import SecurityHeadersMiddleware
+
 app.add_middleware(SecurityHeadersMiddleware)
 
 from starlette.middleware.gzip import GZipMiddleware
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 register_startup_events(app)
@@ -61,8 +68,6 @@ app.include_router(webhooks_router.router)
 app.include_router(admin.router)
 app.include_router(streaming.router)
 app.include_router(onchain.router)
-
-
 
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Health check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
@@ -106,9 +111,8 @@ async def health_check():
 
         # Circuit breaker status
     try:
-        from app.core.circuit_breaker import (
-            binance_circuit, binance_us_circuit
-        )
+        from app.core.circuit_breaker import binance_circuit, binance_us_circuit
+
         health["dependencies"]["circuit_breakers"] = {
             "binance": binance_circuit.get_status(),
             "binance_us": binance_us_circuit.get_status(),
@@ -119,11 +123,10 @@ async def health_check():
     # Cache
     try:
         from app.core.cache import cache_set, cache_get
+
         cache_set("_health", "ok", ttl=10)
         val = cache_get("_health")
-        health["dependencies"]["cache"] = (
-            "ok" if val == "ok" else "error: mismatch"
-        )
+        health["dependencies"]["cache"] = "ok" if val == "ok" else "error: mismatch"
     except Exception as e:
         health["dependencies"]["cache"] = f"error: {str(e)[:50]}"
 
@@ -139,6 +142,7 @@ async def health_check():
 
     # OpenAI
     import os
+
     health["dependencies"]["openai"] = (
         "configured" if os.getenv("OPENAI_API_KEY") else "not_configured"
     )
@@ -148,11 +152,10 @@ async def health_check():
         from app.db.database import SessionLocal
         from app.db.models import MarketSummary
         import datetime as dt
+
         db = SessionLocal()
         latest = (
-            db.query(MarketSummary)
-            .order_by(MarketSummary.created_at.desc())
-            .first()
+            db.query(MarketSummary).order_by(MarketSummary.created_at.desc()).first()
         )
         db.close()
 
@@ -180,14 +183,12 @@ async def health_check():
     return JSONResponse(content=health, status_code=200)
 
 
-
-
-
 # Ã¢â€â‚¬Ã¢â€â‚¬ Global exception handlers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     error_id = str(uuid.uuid4())[:8]
     import logging
+
     logging.getLogger("chainpulse").error(
         f"Unhandled exception [{error_id}]: "
         f"{type(exc).__name__}: {exc}\n"
@@ -211,7 +212,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         headers=getattr(exc, "headers", None) or {},
     )
 
+
 from app.utils.errors import AppError
+
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
@@ -231,7 +234,145 @@ async def app_error_handler(request: Request, exc: AppError):
 @app.get("/admin/tasks")
 def running_tasks(secret: str = ""):
     from app.core.security import constant_time_compare
+
     constant_time_compare(secret)
     from app.core.task_queue import get_running_tasks
+
     return {"tasks": get_running_tasks()}
+
+
+
+admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+FOUNDER_EMAILS = [
+    "your@email.com"  # Replace with your actual email
+]
+
+def require_admin(current_user=Depends(get_current_user)):
+    if current_user.email not in FOUNDER_EMAILS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+@admin_router.get("/stats")
+async def get_admin_stats(
+    admin=Depends(require_admin),
+    db=Depends(get_db)
+):
+    try:
+        from sqlalchemy import func, case
+        
+        result = db.execute("""
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN tier = 'free' OR tier IS NULL THEN 1 ELSE 0 END) as free_count,
+                SUM(CASE WHEN tier = 'essential' THEN 1 ELSE 0 END) as essential_count,
+                SUM(CASE WHEN tier = 'pro' THEN 1 ELSE 0 END) as pro_count,
+                SUM(CASE WHEN tier = 'institutional' THEN 1 ELSE 0 END) as institutional_count
+            FROM users
+        """).fetchone()
+        
+        essential = result.essential_count or 0
+        pro = result.pro_count or 0
+        institutional = result.institutional_count or 0
+        mrr = (essential * 39) + (pro * 79) + (institutional * 149)
+        
+        return {
+            "total_users": result.total or 0,
+            "free": result.free_count or 0,
+            "essential": essential,
+            "pro": pro,
+            "institutional": institutional,
+            "mrr": mrr,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@admin_router.get("/users")
+async def get_all_users(
+    search: Optional[str] = None,
+    tier: Optional[str] = None,
+    limit: int = Query(20, le=100),
+    offset: int = 0,
+    admin=Depends(require_admin),
+    db=Depends(get_db)
+):
+    try:
+        query = "SELECT email, name, tier, created_at, discipline_score FROM users WHERE 1=1"
+        params = {}
+        
+        if search:
+            query += " AND (email ILIKE :search OR name ILIKE :search)"
+            params["search"] = f"%{search}%"
+        
+        if tier and tier != "all":
+            if tier == "free":
+                query += " AND (tier = 'free' OR tier IS NULL)"
+            else:
+                query += " AND tier = :tier"
+                params["tier"] = tier
+        
+        count_query = query.replace(
+            "SELECT email, name, tier, created_at, discipline_score",
+            "SELECT COUNT(*)"
+        )
+        total = db.execute(count_query, params).scalar() or 0
+        
+        query += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
+        params["limit"] = limit
+        params["offset"] = offset
+        
+        rows = db.execute(query, params).fetchall()
+        users = [
+            {
+                "email": r.email,
+                "name": r.name,
+                "tier": r.tier or "free",
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "discipline_score": r.discipline_score,
+            }
+            for r in rows
+        ]
+        
+        return {"users": users, "total": total, "limit": limit, "offset": offset}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@admin_router.post("/users/set-tier")
+async def set_user_tier(
+    email: str,
+    tier: str,
+    admin=Depends(require_admin),
+    db=Depends(get_db)
+):
+    allowed = ["free", "essential", "pro", "institutional"]
+    if tier not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid tier. Must be one of: {allowed}")
+    
+    result = db.execute(
+        "UPDATE users SET tier = :tier WHERE email = :email",
+        {"tier": tier, "email": email}
+    )
+    db.commit()
+    
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {"status": "success", "email": email, "tier": tier}
+
+@admin_router.delete("/users/{email}")
+async def delete_user(
+    email: str,
+    admin=Depends(require_admin),
+    db=Depends(get_db)
+):
+    if email in FOUNDER_EMAILS:
+        raise HTTPException(status_code=400, detail="Cannot delete founder account")
+    
+    db.execute("DELETE FROM users WHERE email = :email", {"email": email})
+    db.commit()
+    
+    return {"status": "deleted", "email": email}
+
+# Register the router
+app.include_router(admin_router)
 

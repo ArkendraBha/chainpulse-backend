@@ -25,6 +25,7 @@ def register_startup_events(app: FastAPI):
         # Restore custom logging setup
         try:
             from logging_config import setup_logging
+
             setup_logging()
         except Exception:
             pass
@@ -36,6 +37,7 @@ def register_startup_events(app: FastAPI):
 
         # FIX 10: Database check only - no ALTER TABLE
         from app.db.database import engine, Base
+
         try:
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
@@ -49,7 +51,6 @@ def register_startup_events(app: FastAPI):
             Base.metadata.create_all(bind=engine)
         except Exception as e:
             logger.warning(f"create_all warning (non-critical): {e}")
-
 
         # FIX 9: Validate critical env vars
         missing = []
@@ -67,8 +68,8 @@ def register_startup_events(app: FastAPI):
 
         # FIX 6: Constant-time safe check
         if settings.UPDATE_SECRET == "changeme":
-            logger.warning(
-                "UPDATE_SECRET is default - change in production!")
+            logger.warning("UPDATE_SECRET is default - change in production!")
+
         # ── CACHE WARMING ──────────────────────────
         async def warm_cache():
             await _asyncio.sleep(10)
@@ -80,6 +81,7 @@ def register_startup_events(app: FastAPI):
                 )
                 from app.core.cache import cache_set
                 from app.core.config import settings as _settings
+
                 db = SessionLocal()
                 breadth = compute_market_breadth(db)
                 cache_set("market_breadth", breadth, ttl=60)
@@ -90,16 +92,19 @@ def register_startup_events(app: FastAPI):
                 logger.info("Cache warmed successfully")
             except Exception as e:
                 logger.warning(f"Cache warming failed: {e}")
+
         import asyncio as _asyncio
+
         _asyncio.create_task(warm_cache())
         # ── END CACHE WARMING ─────────────────────────────────
-        
+
         async def auto_recover_stale_data():
             await _asyncio.sleep(30)
             try:
                 from app.db.database import SessionLocal
                 from app.db.models import MarketSummary
                 import datetime as _dt
+
                 db = SessionLocal()
                 latest = (
                     db.query(MarketSummary)
@@ -108,9 +113,7 @@ def register_startup_events(app: FastAPI):
                 )
                 db.close()
                 if not latest:
-                    logger.warning(
-                        "No data on startup - triggering auto-update"
-                    )
+                    logger.warning("No data on startup - triggering auto-update")
                     needs_update = True
                 else:
                     age = (
@@ -119,16 +122,17 @@ def register_startup_events(app: FastAPI):
                     needs_update = age > 120
                     if needs_update:
                         logger.warning(
-                            f"Data is {round(age)}min old - "
-                            f"triggering auto-update"
+                            f"Data is {round(age)}min old - " f"triggering auto-update"
                         )
                 if needs_update:
                     from app.routers.admin import run_full_update
                     from app.db.database import SessionLocal as SL
+
                     await run_full_update(SL)
                     logger.info("Auto-recovery complete")
             except Exception as e:
                 logger.error(f"Auto-recovery failed: {e}")
+
         _asyncio.create_task(auto_recover_stale_data())
         # ── END AUTO RECOVERY ─────────────────────────────────
 
@@ -139,6 +143,7 @@ def register_startup_events(app: FastAPI):
         logger.info("Shutting down gracefully...")
 
         import asyncio as _asyncio
+
         await _asyncio.sleep(2)
 
         if httpx_client:
@@ -147,10 +152,10 @@ def register_startup_events(app: FastAPI):
 
         try:
             from app.db.database import engine
+
             engine.dispose()
             logger.info("Database connections closed")
         except Exception as e:
             logger.warning(f"DB shutdown error: {e}")
 
         logger.info("Shutdown complete")
-

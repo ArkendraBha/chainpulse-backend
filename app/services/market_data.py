@@ -27,8 +27,8 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
     BINANCE_BASE = "https://api.binance.com"
     BINANCE_US_BASE = "https://api.binance.us"
     urls = [
-    BINANCE_BASE + "/api/v3/klines",
-    BINANCE_US_BASE + "/api/v3/klines",
+        BINANCE_BASE + "/api/v3/klines",
+        BINANCE_US_BASE + "/api/v3/klines",
     ]
 
     params = {
@@ -39,6 +39,7 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
 
     def _fetch_sync(url: str, params: dict):
         import requests as _requests
+
         r = _requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         return r.json()
@@ -58,16 +59,13 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
         try:
             loop = asyncio.get_event_loop()
             data = await loop.run_in_executor(
-                None,
-                functools.partial(_fetch_sync, url, params)
+                None, functools.partial(_fetch_sync, url, params)
             )
             if not isinstance(data, list) or len(data) == 0:
                 continue
             prices = [float(c[4]) for c in data]
             volumes = [float(c[5]) for c in data]
-            logger.info(
-                f"Got {len(prices)} candles for {symbol}/{interval}"
-            )
+            logger.info(f"Got {len(prices)} candles for {symbol}/{interval}")
             cache_set(
                 cache_key,
                 {"prices": prices, "volumes": volumes},
@@ -77,18 +75,13 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
                 cb.call_succeeded()
             return prices, volumes
         except Exception as e:
-            logger.error(
-                f"Kline fetch failed {url} {symbol}/{interval}: {e}"
-            )
+            logger.error(f"Kline fetch failed {url} {symbol}/{interval}: {e}")
             if cb:
                 cb.call_failed()
             continue
 
-
     if cached:
-        logger.warning(
-            f"Using stale kline data for {symbol}/{interval}"
-        )
+        logger.warning(f"Using stale kline data for {symbol}/{interval}")
         return cached["prices"], cached["volumes"]
 
     logger.error(f"All Binance URLs failed for {symbol}/{interval}")
@@ -140,7 +133,7 @@ def volume_momentum(volumes: list, period: int = 10) -> float:
     if len(volumes) < period * 2:
         return 0.0
     recent = sum(volumes[-period:]) / period
-    prior = sum(volumes[-period * 2:-period]) / period
+    prior = sum(volumes[-period * 2 : -period]) / period
     if prior == 0:
         return 0.0
     return ((recent - prior) / prior) * 100
@@ -151,9 +144,7 @@ def calculate_coherence(
     mom_long: float,
     vol_score: float,
 ) -> float:
-    if (mom_short >= 0 and mom_long >= 0) or (
-        mom_short < 0 and mom_long < 0
-    ):
+    if (mom_short >= 0 and mom_long >= 0) or (mom_short < 0 and mom_long < 0):
         alignment = 1.0
     else:
         alignment = 0.3
@@ -204,12 +195,7 @@ async def calculate_score_for_timeframe(
     mom_long = ((prices[-1] - prices[-long_lb]) / prices[-long_lb]) * 100
     vol = volatility(prices)
     vol_mom = volume_momentum(volumes)
-    score = (
-        0.55 * mom_long
-        + 0.35 * mom_short
-        - 0.08 * vol
-        + 0.02 * vol_mom
-    )
+    score = 0.55 * mom_long + 0.35 * mom_short - 0.08 * vol + 0.02 * vol_mom
     score = max(-100, min(100, score))
     coherence = calculate_coherence(mom_short, mom_long, vol)
     return {
@@ -257,9 +243,7 @@ def get_history(db: Session, coin: str, timeframe: str = "1h"):
     )
 
 
-def regime_durations(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> list:
+def regime_durations(db: Session, coin: str, timeframe: str = "1h") -> list:
     records = get_history(db, coin, timeframe)
     if not records:
         return []
@@ -276,9 +260,7 @@ def regime_durations(
     return durations
 
 
-def current_age(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> float:
+def current_age(db: Session, coin: str, timeframe: str = "1h") -> float:
     records = (
         db.query(MarketSummary)
         .filter(
@@ -296,14 +278,10 @@ def current_age(
         if r.label != latest_label:
             break
         start_time = r.created_at
-    return (
-        datetime.datetime.utcnow() - start_time
-    ).total_seconds() / 3600
+    return (datetime.datetime.utcnow() - start_time).total_seconds() / 3600
 
 
-def survival_probability(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> float:
+def survival_probability(db: Session, coin: str, timeframe: str = "1h") -> float:
     durations = regime_durations(db, coin, timeframe)
     age = current_age(db, coin, timeframe)
     if len(durations) < 5:
@@ -312,9 +290,7 @@ def survival_probability(
     return round((len(longer) / len(durations)) * 100, 2)
 
 
-def hazard_rate(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> float:
+def hazard_rate(db: Session, coin: str, timeframe: str = "1h") -> float:
     durations = regime_durations(db, coin, timeframe)
     age = current_age(db, coin, timeframe)
     if len(durations) < 5:
@@ -336,18 +312,14 @@ def percentile_rank(
     return round((len(lower) / len(scores)) * 100, 2)
 
 
-def average_regime_duration(
-    db: Session, coin: str, timeframe: str = "1h"
-) -> float:
+def average_regime_duration(db: Session, coin: str, timeframe: str = "1h") -> float:
     durations = regime_durations(db, coin, timeframe)
     if not durations:
         return 24.0
     return sum(durations) / len(durations)
 
 
-def trend_maturity_score(
-    age: float, avg_duration: float, hazard: float
-) -> float:
+def trend_maturity_score(age: float, avg_duration: float, hazard: float) -> float:
     if avg_duration == 0:
         age_component = min(100, age * 5)
     else:
@@ -355,15 +327,11 @@ def trend_maturity_score(
     return round(min(100, max(0, age_component * 0.6 + hazard * 0.4)), 2)
 
 
-def regime_shift_risk(
-    hazard: float, survival: float, coherence: float
-) -> float:
+def regime_shift_risk(hazard: float, survival: float, coherence: float) -> float:
     return round(
         min(
             100.0,
-            hazard * 0.50
-            + (100 - survival) * 0.35
-            + (100 - coherence) * 0.15,
+            hazard * 0.50 + (100 - survival) * 0.35 + (100 - coherence) * 0.15,
         ),
         2,
     )
@@ -431,11 +399,7 @@ def exposure_recommendation_stacked(
     alignment_mult = 0.5 + alignment / 200
 
     exposure = (
-        base
-        * persistence_factor
-        * hazard_penalty
-        * coherence_factor
-        * alignment_mult
+        base * persistence_factor * hazard_penalty * coherence_factor * alignment_mult
     )
     return round(max(5.0, min(95.0, exposure * 100)), 2)
 
@@ -606,9 +570,7 @@ def build_regime_stack_bulk(coins: list, db: Session) -> dict:
             hazard_1h=hazard_1h,
             coherence_1h=coin_data["1h"]["coherence"] or 50,
         )
-        shift_risk_val = regime_shift_risk(
-            hazard_1h, survival_1h, avg_coh
-        )
+        shift_risk_val = regime_shift_risk(hazard_1h, survival_1h, avg_coh)
 
         result[coin] = {
             "coin": coin,
@@ -655,17 +617,18 @@ def compute_market_breadth(db: Session) -> dict:
     total = bullish + neutral + bearish
     if total == 0:
         return {
-            "bullish": 0, "neutral": 0, "bearish": 0,
-            "total": 0, "breadth_score": 0,
+            "bullish": 0,
+            "neutral": 0,
+            "bearish": 0,
+            "total": 0,
+            "breadth_score": 0,
         }
     return {
         "bullish": bullish,
         "neutral": neutral,
         "bearish": bearish,
         "total": total,
-        "breadth_score": round(
-            ((bullish - bearish) / total) * 100, 2
-        ),
+        "breadth_score": round(((bullish - bearish) / total) * 100, 2),
     }
 
 
@@ -709,19 +672,20 @@ async def volatility_environment(
         positive = sum(1 for r in rets if r > 0)
         stab_pct = round((positive / len(rets)) * 100, 1)
         stab_lbl = (
-            "Strong" if stab_pct > 65
-            else "Moderate" if stab_pct > 50
-            else "Weak" if stab_pct > 35
-            else "Deteriorating"
+            "Strong"
+            if stab_pct > 65
+            else (
+                "Moderate"
+                if stab_pct > 50
+                else "Weak" if stab_pct > 35 else "Deteriorating"
+            )
         )
     else:
         stab_pct, stab_lbl = 50, "Insufficient data"
 
     stress_score = round(vol_score * 0.6 + (100 - stab_pct) * 0.4, 1)
     stress_label = (
-        "High" if stress_score > 70
-        else "Moderate" if stress_score > 40
-        else "Low"
+        "High" if stress_score > 70 else "Moderate" if stress_score > 40 else "Low"
     )
 
     if not volumes_1h:
@@ -732,9 +696,7 @@ async def volatility_environment(
         recent_v = sum(volumes_1h[-6:]) / 6
         liq_ratio = recent_v / (avg_vol + 0.0001)
         liq_label = (
-            "High" if liq_ratio > 1.3
-            else "Normal" if liq_ratio > 0.7
-            else "Thin"
+            "High" if liq_ratio > 1.3 else "Normal" if liq_ratio > 0.7 else "Thin"
         )
     else:
         liq_label = "Unknown"
@@ -773,9 +735,7 @@ def compute_correlation(
         return None
     mean_a = sum(ra) / len(ra)
     mean_b = sum(rb) / len(rb)
-    num = sum(
-        (a - mean_a) * (b - mean_b) for a, b in zip(ra, rb)
-    )
+    num = sum((a - mean_a) * (b - mean_b) for a, b in zip(ra, rb))
     den_a = math.sqrt(sum((a - mean_a) ** 2 for a in ra))
     den_b = math.sqrt(sum((b - mean_b) ** 2 for b in rb))
     if den_a == 0 or den_b == 0:
@@ -787,9 +747,7 @@ async def build_correlation_matrix(
     coins: Optional[list] = None,
 ) -> dict:
     coins_to_use = coins if coins else ["BTC", "ETH", "SOL"]
-    coins_to_use = [
-        c for c in coins_to_use if c in settings.SUPPORTED_COINS
-    ]
+    coins_to_use = [c for c in coins_to_use if c in settings.SUPPORTED_COINS]
     if len(coins_to_use) < 2:
         coins_to_use = ["BTC", "ETH", "SOL"]
 
@@ -814,19 +772,19 @@ async def build_correlation_matrix(
             corr = compute_correlation(price_map[a], price_map[b])
             if corr is not None:
                 abs_corr = abs(corr)
-                pairs.append({
-                    "pair": f"{a}-{b}",
-                    "correlation": corr,
-                    "label": (
-                        "Strong" if abs_corr > 0.8
-                        else "Moderate" if abs_corr > 0.5
-                        else "Weak"
-                    ),
-                })
+                pairs.append(
+                    {
+                        "pair": f"{a}-{b}",
+                        "correlation": corr,
+                        "label": (
+                            "Strong"
+                            if abs_corr > 0.8
+                            else "Moderate" if abs_corr > 0.5 else "Weak"
+                        ),
+                    }
+                )
                 if corr < 0.4:
-                    alerts.append(
-                        f"{a}-{b} correlation breakdown detected ({corr})"
-                    )
+                    alerts.append(f"{a}-{b} correlation breakdown detected ({corr})")
 
     return {"pairs": pairs, "alerts": alerts}
 
@@ -920,8 +878,11 @@ def regime_transition_matrix(
         return None
 
     STATES = [
-        "Strong Risk-On", "Risk-On", "Neutral",
-        "Risk-Off", "Strong Risk-Off",
+        "Strong Risk-On",
+        "Risk-On",
+        "Neutral",
+        "Risk-Off",
+        "Strong Risk-Off",
     ]
     transitions = {s: {t: 0 for t in STATES} for s in STATES}
 
@@ -938,14 +899,9 @@ def regime_transition_matrix(
     if total == 0:
         probs = {s: round(100 / len(STATES), 1) for s in STATES}
     else:
-        probs = {
-            s: round((row.get(s, 0) / total) * 100, 1)
-            for s in STATES
-        }
+        probs = {s: round((row.get(s, 0) / total) * 100, 1) for s in STATES}
 
-    sorted_probs = dict(
-        sorted(probs.items(), key=lambda x: x[1], reverse=True)
-    )
+    sorted_probs = dict(sorted(probs.items(), key=lambda x: x[1], reverse=True))
     return {
         "current_state": current_state,
         "transitions": sorted_probs,
@@ -1045,7 +1001,9 @@ def compute_decision_score(
         ]
     elif decision_score >= 20:
         directive, action, color = "Switch to Defensive", "defensive", "orange"
-        description = "Multiple deterioration signals active. Reduce exposure significantly."
+        description = (
+            "Multiple deterioration signals active. Reduce exposure significantly."
+        )
         actions = [
             "Reduce exposure to lower band immediately",
             "No new long entries",
@@ -1054,7 +1012,9 @@ def compute_decision_score(
         ]
     else:
         directive, action, color = "Risk-Off - Exit", "exit", "red"
-        description = "Regime breakdown in progress. Capital preservation is the priority."
+        description = (
+            "Regime breakdown in progress. Capital preservation is the priority."
+        )
         actions = [
             "Exit or heavily reduce all positions",
             "Move to maximum cash allocation",
@@ -1136,22 +1096,21 @@ async def update_market(
         # Push live update to WebSocket clients
         try:
             from app.routers.streaming import push_regime_update
+
             stack = build_regime_stack(coin, db)
             await push_regime_update(coin, stack)
         except Exception:
             pass
 
         db.refresh(entry)
-        logger.info(
-            f"Saved {coin}/{timeframe}: {entry.label} ({entry.score})"
-        )
+        logger.info(f"Saved {coin}/{timeframe}: {entry.label} ({entry.score})")
         return entry
 
     except Exception as e:
         logger.error(
-            f"update_market FAILED {coin}/{timeframe}: "
-            f"{type(e).__name__}: {e}"
+            f"update_market FAILED {coin}/{timeframe}: " f"{type(e).__name__}: {e}"
         )
         import traceback
+
         logger.error(traceback.format_exc())
         return None

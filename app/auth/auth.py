@@ -8,14 +8,15 @@ from app.db.models import User, UserProfile
 import secrets
 import hashlib
 
+
 def generate_access_token() -> str:
     """Cryptographically secure token - 256 bits of entropy."""
     return secrets.token_urlsafe(32)
 
+
 def hash_token(token: str) -> str:
     """Store hashed token in DB, compare hash on lookup."""
     return hashlib.sha256(token.encode()).hexdigest()
-
 
 
 def resolve_user_tier(authorization: Optional[str], db: Session) -> dict:
@@ -81,11 +82,7 @@ def require_email_ownership(user_info: dict, requested_email: str) -> str:
     FIX 1: Enforces that authenticated user can only access their own data.
     Returns the normalized email on success.
     """
-    authenticated_email = (
-        user_info.get("user").email
-        if user_info.get("user")
-        else None
-    )
+    authenticated_email = user_info.get("user").email if user_info.get("user") else None
     if not authenticated_email:
         raise HTTPException(
             status_code=401,
@@ -102,17 +99,14 @@ def require_email_ownership(user_info: dict, requested_email: str) -> str:
 
 def update_last_active(request: Request, db: Session):
     from app.core.security import get_auth_header
+
     token = get_auth_header(request)
     if not token:
         return
     token_val = (
-        token.replace("Bearer ", "").strip()
-        if token.startswith("Bearer ")
-        else token
+        token.replace("Bearer ", "").strip() if token.startswith("Bearer ") else token
     )
     user = db.query(User).filter(User.access_token == token_val).first()
     if user:
         user.last_active_at = datetime.datetime.utcnow()
         db.commit()
-
-

@@ -11,12 +11,14 @@ def send_email(to: str, subject: str, html: str) -> bool:
         return False
     try:
         resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send({
-            "from": settings.RESEND_FROM_EMAIL,
-            "to": to,
-            "subject": subject,
-            "html": html,
-        })
+        resend.Emails.send(
+            {
+                "from": settings.RESEND_FROM_EMAIL,
+                "to": to,
+                "subject": subject,
+                "html": html,
+            }
+        )
         return True
     except Exception as e:
         logger.error(f"send_email failed for {to}: {e}")
@@ -83,15 +85,19 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
     exposure = stack.get("exposure", 0)
 
     from app.utils.enums import PLAYBOOK_DATA
+
     pb = PLAYBOOK_DATA.get(exec_l, PLAYBOOK_DATA["Neutral"])
 
     quality_row = ""
     if quality:
         grade_color = (
-            "#34d399" if quality["grade"].startswith("A") else
-            "#4ade80" if quality["grade"].startswith("B") else
-            "#facc15" if quality["grade"].startswith("C") else
-            "#f87171"
+            "#34d399"
+            if quality["grade"].startswith("A")
+            else (
+                "#4ade80"
+                if quality["grade"].startswith("B")
+                else "#facc15" if quality["grade"].startswith("C") else "#f87171"
+            )
         )
         quality_row = f"""
     <tr>
@@ -163,6 +169,7 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
 def morning_email_html(stacks: list, access_token: str) -> str:
     from app.utils.enums import PLAYBOOK_DATA
     from app.services.market_data import compute_regime_quality
+
     url = (
         f"{settings.FRONTEND_URL}/app?token={access_token}"
         if access_token
@@ -178,15 +185,18 @@ def morning_email_html(stacks: list, access_token: str) -> str:
         quality = compute_regime_quality(s)
 
         risk_color = (
-            "#f87171" if shift_risk > 70
-            else "#facc15" if shift_risk > 45
-            else "#4ade80"
+            "#f87171"
+            if shift_risk > 70
+            else "#facc15" if shift_risk > 45 else "#4ade80"
         )
         grade_color = (
-            "#34d399" if quality["grade"].startswith("A") else
-            "#4ade80" if quality["grade"].startswith("B") else
-            "#facc15" if quality["grade"].startswith("C") else
-            "#f87171"
+            "#34d399"
+            if quality["grade"].startswith("A")
+            else (
+                "#4ade80"
+                if quality["grade"].startswith("B")
+                else "#facc15" if quality["grade"].startswith("C") else "#f87171"
+            )
         )
         rows += f"""
         <tr>
@@ -260,10 +270,13 @@ def weekly_discipline_email_html(
     flags = discipline.get("flags", [])
 
     score_color = (
-        "#34d399" if score and score >= 85 else
-        "#4ade80" if score and score >= 70 else
-        "#facc15" if score and score >= 50 else
-        "#f87171"
+        "#34d399"
+        if score and score >= 85
+        else (
+            "#4ade80"
+            if score and score >= 70
+            else "#facc15" if score and score >= 50 else "#f87171"
+        )
     )
     score_display = f"{score}" if score is not None else "N/A"
 
@@ -336,9 +349,7 @@ def weekly_discipline_email_html(
 """
 
 
-def onboarding_day0_html(
-    email: str, access_token: str, stack: dict = None
-) -> str:
+def onboarding_day0_html(email: str, access_token: str, stack: dict = None) -> str:
     url = (
         f"{settings.FRONTEND_URL}/app?token={access_token}"
         if access_token
@@ -348,8 +359,7 @@ def onboarding_day0_html(
     directive_line = ""
     if stack and not stack.get("incomplete"):
         exec_label = (
-            stack["execution"]["label"]
-            if stack.get("execution") else "Neutral"
+            stack["execution"]["label"] if stack.get("execution") else "Neutral"
         )
         exposure = stack.get("exposure") or 50
         regime_line = f'<p style="color:#fff;font-size:16px;">Current BTC Regime: <strong>{exec_label}</strong></p>'
@@ -493,5 +503,3 @@ def onboarding_day6_html(email: str, access_token: str) -> str:
   </p>
 </div>
 """
-
-

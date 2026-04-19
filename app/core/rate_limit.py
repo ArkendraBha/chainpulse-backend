@@ -9,6 +9,7 @@ _redis_client = None
 
 try:
     import redis
+
     REDIS_URL = os.getenv("REDIS_URL")
     if REDIS_URL:
         _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -92,9 +93,7 @@ class RateLimiter:
             bucket = self._buckets[key]
             elapsed = now - bucket["last_refill"]
             refill = elapsed * (max_requests / window_seconds)
-            bucket["tokens"] = min(
-                max_requests, bucket["tokens"] + refill
-            )
+            bucket["tokens"] = min(max_requests, bucket["tokens"] + refill)
             bucket["last_refill"] = now
             if bucket["tokens"] < 1:
                 raise HTTPException(

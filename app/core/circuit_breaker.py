@@ -50,13 +50,10 @@ class CircuitBreaker:
         if self.state == CircuitState.OPEN:
             if (
                 self.last_failure_time
-                and time.time() - self.last_failure_time
-                > self.recovery_timeout
+                and time.time() - self.last_failure_time > self.recovery_timeout
             ):
                 self.state = CircuitState.HALF_OPEN
-                logger.info(
-                    f"Circuit breaker HALF_OPEN for {self.name}"
-                )
+                logger.info(f"Circuit breaker HALF_OPEN for {self.name}")
                 return True
             return False
         return True
@@ -70,9 +67,7 @@ class CircuitBreaker:
         }
 
 
-binance_circuit = CircuitBreaker(
-    "binance", failure_threshold=5, recovery_timeout=60
-)
+binance_circuit = CircuitBreaker("binance", failure_threshold=5, recovery_timeout=60)
 binance_us_circuit = CircuitBreaker(
     "binance_us", failure_threshold=5, recovery_timeout=60
 )

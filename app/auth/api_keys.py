@@ -20,10 +20,14 @@ def resolve_api_key(request: Request, db: Session) -> Optional[dict]:
     if not api_key or len(api_key) < 20:
         return None
 
-    key_record = db.query(ApiKey).filter(
-        ApiKey.key == api_key,
-        ApiKey.is_active == True,
-    ).first()
+    key_record = (
+        db.query(ApiKey)
+        .filter(
+            ApiKey.key == api_key,
+            ApiKey.is_active == True,
+        )
+        .first()
+    )
 
     if not key_record:
         return None
@@ -50,23 +54,15 @@ def resolve_api_key(request: Request, db: Session) -> Optional[dict]:
     db.commit()
 
     # Verify the user is still institutional
-    user = db.query(User).filter(
-        User.email == key_record.email
-    ).first()
-    if (
-        not user
-        or user.subscription_status != "active"
-        or user.tier != "institutional"
-    ):
+    user = db.query(User).filter(User.email == key_record.email).first()
+    if not user or user.subscription_status != "active" or user.tier != "institutional":
         return None
 
     return {
         "email": key_record.email,
         "tier": user.tier,
         "api_key_id": key_record.id,
-        "requests_remaining": (
-            key_record.daily_limit - key_record.requests_today
-        ),
+        "requests_remaining": (key_record.daily_limit - key_record.requests_today),
     }
 
 
@@ -79,5 +75,3 @@ def require_api_key(request: Request, db: Session) -> dict:
             detail="Valid API key required. Get yours at /api/v1/keys",
         )
     return result
-
-

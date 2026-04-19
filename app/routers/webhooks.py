@@ -27,18 +27,18 @@ def create_webhook(
     # FIX 3: SSRF-safe URL validation
     body.url = validate_webhook_url(body.url)
 
-    existing = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.email == email,
-        WebhookEndpoint.is_active == True,
-    ).count()
-    if existing >= 5:
-        raise HTTPException(
-            400, detail="Maximum 5 active webhooks per account"
+    existing = (
+        db.query(WebhookEndpoint)
+        .filter(
+            WebhookEndpoint.email == email,
+            WebhookEndpoint.is_active == True,
         )
-
-    webhook_secret = (
-        body.secret or f"whsec_{secrets_mod.token_hex(20)}"
+        .count()
     )
+    if existing >= 5:
+        raise HTTPException(400, detail="Maximum 5 active webhooks per account")
+
+    webhook_secret = body.secret or f"whsec_{secrets_mod.token_hex(20)}"
     endpoint = WebhookEndpoint(
         email=email,
         url=body.url,
@@ -72,17 +72,13 @@ def list_webhooks(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
 
-    endpoints = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.email == email
-    ).all()
+    endpoints = db.query(WebhookEndpoint).filter(WebhookEndpoint.email == email).all()
     return {
         "webhooks": [
             {
                 "id": e.id,
                 "url": e.url,
-                "events": (
-                    e.events.split(",") if e.events else []
-                ),
+                "events": (e.events.split(",") if e.events else []),
                 "is_active": e.is_active,
                 "failure_count": e.failure_count,
                 "last_triggered_at": e.last_triggered_at,
@@ -104,10 +100,14 @@ def update_webhook(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, body.email)
 
-    endpoint = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.id == webhook_id,
-        WebhookEndpoint.email == email,
-    ).first()
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(
+            WebhookEndpoint.id == webhook_id,
+            WebhookEndpoint.email == email,
+        )
+        .first()
+    )
     if not endpoint:
         raise HTTPException(404, detail="Webhook not found")
 
@@ -137,10 +137,14 @@ def delete_webhook(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
 
-    endpoint = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.id == webhook_id,
-        WebhookEndpoint.email == email,
-    ).first()
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(
+            WebhookEndpoint.id == webhook_id,
+            WebhookEndpoint.email == email,
+        )
+        .first()
+    )
     if not endpoint:
         raise HTTPException(404, detail="Webhook not found")
 
@@ -161,10 +165,14 @@ def webhook_deliveries(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
 
-    endpoint = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.id == webhook_id,
-        WebhookEndpoint.email == email,
-    ).first()
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(
+            WebhookEndpoint.id == webhook_id,
+            WebhookEndpoint.email == email,
+        )
+        .first()
+    )
     if not endpoint:
         raise HTTPException(404, detail="Webhook not found")
 
@@ -203,10 +211,14 @@ async def test_webhook(
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
 
-    endpoint = db.query(WebhookEndpoint).filter(
-        WebhookEndpoint.id == webhook_id,
-        WebhookEndpoint.email == email,
-    ).first()
+    endpoint = (
+        db.query(WebhookEndpoint)
+        .filter(
+            WebhookEndpoint.id == webhook_id,
+            WebhookEndpoint.email == email,
+        )
+        .first()
+    )
     if not endpoint:
         raise HTTPException(404, detail="Webhook not found")
 
@@ -220,9 +232,7 @@ async def test_webhook(
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
-    success = await deliver_webhook(
-        endpoint, "test", test_payload, db
-    )
+    success = await deliver_webhook(endpoint, "test", test_payload, db)
     return {
         "success": success,
         "message": (
@@ -231,5 +241,3 @@ async def test_webhook(
             else "Test webhook failed - check your endpoint"
         ),
     }
-
-

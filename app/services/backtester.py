@@ -84,9 +84,7 @@ def run_backtest(
         price_return_estimate = score_change * 0.002
 
         # Rebalance check
-        hours_since = (
-            record.created_at - last_rebalance
-        ).total_seconds() / 3600
+        hours_since = (record.created_at - last_rebalance).total_seconds() / 3600
 
         if hours_since >= rebalance_frequency_hours:
             if strategy == "follow_model":
@@ -99,24 +97,25 @@ def run_backtest(
                 target = 0.85 if "Risk-On" in record.label else 0.05
             elif strategy == "inverse":
                 target = (
-                    0.80 if "Risk-Off" in record.label
-                    else 0.05 if "Risk-On" in record.label
-                    else 0.40
+                    0.80
+                    if "Risk-Off" in record.label
+                    else 0.05 if "Risk-On" in record.label else 0.40
                 )
             else:
                 target = 0.5
 
             if abs(target - current_exposure) > 0.05:
-                trades.append({
-                    "timestamp": record.created_at.isoformat(),
-                    "regime": record.label,
-                    "from_exposure": round(current_exposure * 100, 1),
-                    "to_exposure": round(target * 100, 1),
-                    "direction": (
-                        "increase" if target > current_exposure
-                        else "decrease"
-                    ),
-                })
+                trades.append(
+                    {
+                        "timestamp": record.created_at.isoformat(),
+                        "regime": record.label,
+                        "from_exposure": round(current_exposure * 100, 1),
+                        "to_exposure": round(target * 100, 1),
+                        "direction": (
+                            "increase" if target > current_exposure else "decrease"
+                        ),
+                    }
+                )
                 current_exposure = target
                 last_rebalance = record.created_at
 
@@ -139,19 +138,13 @@ def run_backtest(
                 "benchmark_returns": [],
             }
         regime_performance[label]["hours"] += 1
-        regime_performance[label]["strategy_returns"].append(
-            strategy_return
-        )
-        regime_performance[label]["benchmark_returns"].append(
-            benchmark_return
-        )
+        regime_performance[label]["strategy_returns"].append(strategy_return)
+        regime_performance[label]["benchmark_returns"].append(benchmark_return)
 
     # Statistics
     final_equity = equity_curve[-1]
     final_benchmark = benchmark_curve[-1]
-    total_return = (
-        (final_equity - initial_capital) / initial_capital
-    ) * 100
+    total_return = ((final_equity - initial_capital) / initial_capital) * 100
     benchmark_return_total = (
         (final_benchmark - initial_capital) / initial_capital
     ) * 100
@@ -175,21 +168,19 @@ def run_backtest(
     ]
     if len(returns) > 1:
         avg_r = sum(returns) / len(returns)
-        std_r = (
-            sum((r - avg_r) ** 2 for r in returns) / len(returns)
-        ) ** 0.5
-        sharpe = (avg_r / std_r) * (8760 ** 0.5) if std_r > 0 else 0
+        std_r = (sum((r - avg_r) ** 2 for r in returns) / len(returns)) ** 0.5
+        sharpe = (avg_r / std_r) * (8760**0.5) if std_r > 0 else 0
     else:
         sharpe = 0
 
     # Win rate
     winning = sum(
-        1 for i in range(1, len(equity_curve))
-        if equity_curve[i] > equity_curve[i - 1]
+        1 for i in range(1, len(equity_curve)) if equity_curve[i] > equity_curve[i - 1]
     )
     win_rate = (
         round((winning / (len(equity_curve) - 1)) * 100, 1)
-        if len(equity_curve) > 1 else 0
+        if len(equity_curve) > 1
+        else 0
     )
 
     # Regime breakdown
@@ -200,15 +191,11 @@ def run_backtest(
         if sr:
             regime_summary[label] = {
                 "hours": data["hours"],
-                "strategy_avg_return_pct": round(
-                    sum(sr) / len(sr) * 100, 4
+                "strategy_avg_return_pct": round(sum(sr) / len(sr) * 100, 4),
+                "benchmark_avg_return_pct": (
+                    round(sum(br) / len(br) * 100, 4) if br else 0
                 ),
-                "benchmark_avg_return_pct": round(
-                    sum(br) / len(br) * 100, 4
-                ) if br else 0,
-                "pct_of_period": round(
-                    (data["hours"] / len(records_1h)) * 100, 1
-                ),
+                "pct_of_period": round((data["hours"] / len(records_1h)) * 100, 1),
             }
 
     # Sampled equity curve for chart
@@ -216,20 +203,20 @@ def run_backtest(
     sampled_curve = []
     for i in range(0, len(equity_curve), sample_step):
         if i < len(records_1h):
-            sampled_curve.append({
-                "timestamp": records_1h[i].created_at.isoformat(),
-                "equity": equity_curve[i],
-                "benchmark": benchmark_curve[i],
-                "regime": records_1h[i].label,
-                "exposure": round(current_exposure * 100, 0),
-            })
+            sampled_curve.append(
+                {
+                    "timestamp": records_1h[i].created_at.isoformat(),
+                    "equity": equity_curve[i],
+                    "benchmark": benchmark_curve[i],
+                    "regime": records_1h[i].label,
+                    "exposure": round(current_exposure * 100, 0),
+                }
+            )
 
     return {
         "coin": coin,
         "strategy": strategy,
-        "strategy_description": STRATEGY_DESCRIPTIONS.get(
-            strategy, strategy
-        ),
+        "strategy_description": STRATEGY_DESCRIPTIONS.get(strategy, strategy),
         "period": {
             "start": start_date.isoformat(),
             "end": end_date.isoformat(),
@@ -272,8 +259,12 @@ def compare_strategies(
     results = {}
     for strategy in STRATEGY_DESCRIPTIONS.keys():
         result = run_backtest(
-            db, coin, start_date, end_date,
-            initial_capital, strategy,
+            db,
+            coin,
+            start_date,
+            end_date,
+            initial_capital,
+            strategy,
         )
         if "error" not in result:
             results[strategy] = {

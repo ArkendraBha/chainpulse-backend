@@ -73,11 +73,7 @@ def get_alert_thresholds(
     auth = get_auth_header(request)
     user_info = require_tier(auth, db, minimum_tier="institutional")
     email = require_email_ownership(user_info, email)
-    thresholds = (
-        db.query(AlertThreshold)
-        .filter(AlertThreshold.email == email)
-        .all()
-    )
+    thresholds = db.query(AlertThreshold).filter(AlertThreshold.email == email).all()
     return {
         "email": email,
         "thresholds": [
@@ -111,9 +107,7 @@ async def evaluate_alerts_endpoint(
         "email": email,
         "alerts": alerts,
         "alert_count": len(alerts),
-        "high_severity_count": sum(
-            1 for a in alerts if a.get("severity") == "high"
-        ),
+        "high_severity_count": sum(1 for a in alerts if a.get("severity") == "high"),
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
@@ -124,11 +118,15 @@ def send_alerts(
     db: Session = Depends(get_db),
 ):
     constant_time_compare(secret)
-    pro_users = db.query(User).filter(
-        User.subscription_status == "active",
-        User.alerts_enabled == True,
-        User.tier.in_(["essential", "pro", "institutional"]),
-    ).all()
+    pro_users = (
+        db.query(User)
+        .filter(
+            User.subscription_status == "active",
+            User.alerts_enabled == True,
+            User.tier.in_(["essential", "pro", "institutional"]),
+        )
+        .all()
+    )
 
     sent = 0
     for coin in settings.SUPPORTED_COINS:
@@ -154,9 +152,7 @@ def send_alerts(
                 if hrs < min_hours:
                     continue
 
-            subject_prefix = (
-                "? Priority: " if user.tier == "institutional" else ""
-            )
+            subject_prefix = "? Priority: " if user.tier == "institutional" else ""
             send_email(
                 user.email,
                 f"{subject_prefix}ChainPulse Alert - {coin} Regime Shift Risk Elevated",
@@ -175,9 +171,7 @@ def send_morning_email(
     db: Session = Depends(get_db),
 ):
     constant_time_compare(secret)
-    subscribers = db.query(User).filter(
-        User.alerts_enabled == True
-    ).all()
+    subscribers = db.query(User).filter(User.alerts_enabled == True).all()
     stacks = []
     for coin in settings.SUPPORTED_COINS:
         stack = build_regime_stack(coin, db)
@@ -202,11 +196,16 @@ def send_weekly_discipline(
 ):
     from app.services.regime_engine import compute_discipline_score
     from app.services.emails import weekly_discipline_email_html
+
     constant_time_compare(secret)
-    pro_users = db.query(User).filter(
-        User.subscription_status == "active",
-        User.alerts_enabled == True,
-    ).all()
+    pro_users = (
+        db.query(User)
+        .filter(
+            User.subscription_status == "active",
+            User.alerts_enabled == True,
+        )
+        .all()
+    )
     sent = 0
     errors = 0
     for user in pro_users:
@@ -236,6 +235,7 @@ def send_weekly_discipline(
             sent += 1
         except Exception as e:
             import logging
+
             logging.getLogger("chainpulse").error(
                 f"Weekly discipline email failed for {user.email}: {e}"
             )
@@ -259,16 +259,23 @@ def send_onboarding_drip(
     db: Session = Depends(get_db),
 ):
     from app.services.emails import (
-        onboarding_day0_html, onboarding_day2_html,
-        onboarding_day5_html, onboarding_day6_html,
+        onboarding_day0_html,
+        onboarding_day2_html,
+        onboarding_day5_html,
+        onboarding_day6_html,
     )
     from app.services.market_data import build_regime_stack
+
     constant_time_compare(secret)
     now = datetime.datetime.utcnow()
-    users = db.query(User).filter(
-        User.subscription_status == "active",
-        User.trial_start_date.isnot(None),
-    ).all()
+    users = (
+        db.query(User)
+        .filter(
+            User.subscription_status == "active",
+            User.trial_start_date.isnot(None),
+        )
+        .all()
+    )
 
     sent = 0
     errors = 0
@@ -280,9 +287,7 @@ def send_onboarding_drip(
                 send_email(
                     user.email,
                     "Welcome to ChainPulse Pro - Your first action",
-                    onboarding_day0_html(
-                        user.email, user.access_token or "", stack
-                    ),
+                    onboarding_day0_html(user.email, user.access_token or "", stack),
                 )
                 user.onboarding_step = 1
                 sent += 1
@@ -313,10 +318,9 @@ def send_onboarding_drip(
             db.commit()
         except Exception as e:
             import logging
+
             logging.getLogger("chainpulse").error(
                 f"Onboarding drip failed for {user.email}: {e}"
             )
             errors += 1
     return {"status": "complete", "sent": sent, "errors": errors}
-
-

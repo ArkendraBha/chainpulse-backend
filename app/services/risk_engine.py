@@ -49,12 +49,10 @@ def monte_carlo_var(
             if random.random() < 0.02:
                 shock += random.gauss(0, adj_vol * 2)
 
-            value *= (1 + shock)
+            value *= 1 + shock
             value = max(0, value)
 
-        pnl_pct = (
-            (value - portfolio_value_at_risk) / account_size
-        ) * 100
+        pnl_pct = ((value - portfolio_value_at_risk) / account_size) * 100
         results.append(round(pnl_pct, 4))
 
     results.sort()
@@ -78,18 +76,10 @@ def monte_carlo_var(
     p75 = results[int(simulations * 0.75)]
     p95 = results[int(simulations * 0.95)]
 
-    probability_of_loss = (
-        sum(1 for r in results if r < 0) / simulations * 100
-    )
-    probability_loss_5pct = (
-        sum(1 for r in results if r < -5) / simulations * 100
-    )
-    probability_loss_10pct = (
-        sum(1 for r in results if r < -10) / simulations * 100
-    )
-    probability_loss_20pct = (
-        sum(1 for r in results if r < -20) / simulations * 100
-    )
+    probability_of_loss = sum(1 for r in results if r < 0) / simulations * 100
+    probability_loss_5pct = sum(1 for r in results if r < -5) / simulations * 100
+    probability_loss_10pct = sum(1 for r in results if r < -10) / simulations * 100
+    probability_loss_20pct = sum(1 for r in results if r < -20) / simulations * 100
 
     # Dollar values
     var_95_usd = abs(round(account_size * var_95 / 100, 2))

@@ -87,7 +87,8 @@ async def dashboard(
             "coherence": latest_r.coherence,
             "timestamp": latest_r.created_at,
         }
-        if latest_r else {"message": "No data yet."}
+        if latest_r
+        else {"message": "No data yet."}
     )
 
     # History
@@ -115,6 +116,7 @@ async def dashboard(
 
     # Overview
     from app.services.market_data import build_regime_stack_bulk
+
     overview_list = []
     breadth = compute_market_breadth(db)
     all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
@@ -124,23 +126,27 @@ async def dashboard(
             continue
 
         if is_pro:
-            overview_list.append({
-                "coin": s["coin"],
-                "macro": s["macro"]["label"] if s["macro"] else None,
-                "trend": s["trend"]["label"] if s["trend"] else None,
-                "execution": s["execution"]["label"] if s["execution"] else None,
-                "alignment": s["alignment"],
-                "direction": s["direction"],
-                "exposure": s["exposure"],
-                "shift_risk": s["shift_risk"],
-            })
+            overview_list.append(
+                {
+                    "coin": s["coin"],
+                    "macro": s["macro"]["label"] if s["macro"] else None,
+                    "trend": s["trend"]["label"] if s["trend"] else None,
+                    "execution": s["execution"]["label"] if s["execution"] else None,
+                    "alignment": s["alignment"],
+                    "direction": s["direction"],
+                    "exposure": s["exposure"],
+                    "shift_risk": s["shift_risk"],
+                }
+            )
         else:
-            overview_list.append({
-                "coin": s["coin"],
-                "execution": s["execution"]["label"] if s["execution"] else None,
-                "direction": s["direction"],
-                "pro_required": True,
-            })
+            overview_list.append(
+                {
+                    "coin": s["coin"],
+                    "execution": s["execution"]["label"] if s["execution"] else None,
+                    "direction": s["direction"],
+                    "pro_required": True,
+                }
+            )
 
     curve_data = None
     transitions_data = None
@@ -160,11 +166,13 @@ async def dashboard(
                 if hour > 0 and survivors:
                     exited = [d for d in durations if hour - 1 < d <= hour]
                     hz = (len(exited) / len(survivors)) * 100
-                curve.append({
-                    "hour": hour,
-                    "survival": round(surv_pct, 2),
-                    "hazard": round(hz, 2),
-                })
+                curve.append(
+                    {
+                        "hour": hour,
+                        "survival": round(surv_pct, 2),
+                        "hazard": round(hz, 2),
+                    }
+                )
             curve_data = {"data": curve, "source": "historical"}
 
         try:
@@ -176,9 +184,7 @@ async def dashboard(
         except Exception:
             vol_env_data = None
         try:
-            correlation_data = await build_correlation_matrix(
-                settings.SUPPORTED_COINS
-            )
+            correlation_data = await build_correlation_matrix(settings.SUPPORTED_COINS)
         except Exception:
             correlation_data = None
         try:
@@ -205,12 +211,18 @@ async def dashboard(
         "history": history_data,
         "overview": overview_list,
         "breadth": (
-            breadth if is_pro else {
+            breadth
+            if is_pro
+            else {
                 "total": breadth.get("total", 0),
                 "sentiment": (
-                    "Bullish" if breadth.get("breadth_score", 0) > 30
-                    else "Bearish" if breadth.get("breadth_score", 0) < -30
-                    else "Neutral"
+                    "Bullish"
+                    if breadth.get("breadth_score", 0) > 30
+                    else (
+                        "Bearish"
+                        if breadth.get("breadth_score", 0) < -30
+                        else "Neutral"
+                    )
                 ),
                 "pro_required": True,
             }
@@ -253,18 +265,13 @@ async def premium_dashboard(
     except Exception:
         setup = {"setup_quality_score": None, "error": "Failed"}
 
-    quality = (
-        compute_regime_quality(stack)
-        if not stack.get("incomplete") else None
-    )
+    quality = compute_regime_quality(stack) if not stack.get("incomplete") else None
 
     age_1h = current_age(db, coin, "1h")
     avg_dur = average_regime_duration(db, coin, "1h")
     hazard_val = stack.get("hazard") or 0
     maturity = trend_maturity_score(age_1h, avg_dur, hazard_val)
-    exec_score = (
-        stack["execution"]["score"] if stack.get("execution") else 0
-    )
+    exec_score = stack["execution"]["score"] if stack.get("execution") else 0
     pct_rank = percentile_rank(db, coin, exec_score, "1h")
 
     breadth = compute_market_breadth(db)
@@ -280,8 +287,7 @@ async def premium_dashboard(
                 maturity_pct=maturity,
             )
             exec_label = (
-                stack["execution"]["label"]
-                if stack.get("execution") else "Neutral"
+                stack["execution"]["label"] if stack.get("execution") else "Neutral"
             )
             decision["regime"] = exec_label
             decision["exposure"] = stack.get("exposure", 50)
@@ -291,9 +297,7 @@ async def premium_dashboard(
             decision = None
 
     try:
-        scenarios = await compute_scenarios(
-            coin, db, stack=stack, setup=setup
-        )
+        scenarios = await compute_scenarios(coin, db, stack=stack, setup=setup)
     except Exception:
         scenarios = None
 
@@ -308,16 +312,16 @@ async def premium_dashboard(
         event_risk = compute_event_risk_overlay(coin, db, stack=stack)
     except Exception:
         event_risk = None
-    
+
     # AI Narrative
     try:
         from app.services.ai_narrative import generate_regime_narrative
+
         narrative = await generate_regime_narrative(
             coin, stack, setup, scenarios, damage
         )
     except Exception:
         narrative = {"available": False}
-
 
     try:
         durations = regime_durations(db, coin, "1h")
@@ -331,11 +335,13 @@ async def premium_dashboard(
                 if hour > 0 and survivors:
                     exited = [d for d in durations if hour - 1 < d <= hour]
                     hz = (len(exited) / len(survivors)) * 100
-                curve.append({
-                    "hour": hour,
-                    "survival": round(surv_pct, 2),
-                    "hazard": round(hz, 2),
-                })
+                curve.append(
+                    {
+                        "hour": hour,
+                        "survival": round(surv_pct, 2),
+                        "hazard": round(hz, 2),
+                    }
+                )
             survival_data = {"data": curve, "source": "historical"}
         else:
             survival_data = {
@@ -358,9 +364,7 @@ async def premium_dashboard(
         transitions = None
 
     try:
-        vol_env = await volatility_environment(
-            coin, db, market_data=market_data
-        )
+        vol_env = await volatility_environment(coin, db, market_data=market_data)
     except Exception:
         vol_env = None
 
@@ -517,7 +521,8 @@ async def dashboard_v2(
             "coherence": latest_r.coherence,
             "timestamp": latest_r.created_at,
         }
-        if latest_r else {"message": "No data yet."}
+        if latest_r
+        else {"message": "No data yet."}
     )
 
     records = (
@@ -543,6 +548,7 @@ async def dashboard_v2(
     ]
 
     from app.services.market_data import build_regime_stack_bulk
+
     overview_list = []
     breadth = compute_market_breadth(db)
     all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
@@ -552,23 +558,27 @@ async def dashboard_v2(
             continue
 
         if is_pro:
-            overview_list.append({
-                "coin": s["coin"],
-                "macro": s["macro"]["label"] if s["macro"] else None,
-                "trend": s["trend"]["label"] if s["trend"] else None,
-                "execution": s["execution"]["label"] if s["execution"] else None,
-                "alignment": s["alignment"],
-                "direction": s["direction"],
-                "exposure": s["exposure"],
-                "shift_risk": s["shift_risk"],
-            })
+            overview_list.append(
+                {
+                    "coin": s["coin"],
+                    "macro": s["macro"]["label"] if s["macro"] else None,
+                    "trend": s["trend"]["label"] if s["trend"] else None,
+                    "execution": s["execution"]["label"] if s["execution"] else None,
+                    "alignment": s["alignment"],
+                    "direction": s["direction"],
+                    "exposure": s["exposure"],
+                    "shift_risk": s["shift_risk"],
+                }
+            )
         else:
-            overview_list.append({
-                "coin": s["coin"],
-                "execution": s["execution"]["label"] if s["execution"] else None,
-                "direction": s["direction"],
-                "pro_required": True,
-            })
+            overview_list.append(
+                {
+                    "coin": s["coin"],
+                    "execution": s["execution"]["label"] if s["execution"] else None,
+                    "direction": s["direction"],
+                    "pro_required": True,
+                }
+            )
 
     result = {
         "stack": stack,
@@ -583,11 +593,18 @@ async def dashboard_v2(
 
     if not is_pro:
         result["pro_features_available"] = [
-            "setup_quality", "scenarios", "internal_damage",
-            "event_risk", "trade_plan", "behavioral_alpha",
-            "opportunity_ranking", "historical_analogs",
-            "archetype_overlay", "what_changed",
-            "dynamic_alerts", "premium_overview",
+            "setup_quality",
+            "scenarios",
+            "internal_damage",
+            "event_risk",
+            "trade_plan",
+            "behavioral_alpha",
+            "opportunity_ranking",
+            "historical_analogs",
+            "archetype_overlay",
+            "what_changed",
+            "dynamic_alerts",
+            "premium_overview",
         ]
         return result
 
@@ -627,7 +644,9 @@ async def dashboard_v2(
 
     try:
         result["scenarios"] = await compute_scenarios(
-            coin, db, stack=stack,
+            coin,
+            db,
+            stack=stack,
             setup=result.get("setup_quality"),
         )
     except Exception:
@@ -641,16 +660,13 @@ async def dashboard_v2(
         result["internal_damage"] = None
 
     try:
-        result["event_risk"] = compute_event_risk_overlay(
-            coin, db, stack=stack
-        )
+        result["event_risk"] = compute_event_risk_overlay(coin, db, stack=stack)
     except Exception:
         result["event_risk"] = None
 
     try:
         result["regime_quality"] = (
-            compute_regime_quality(stack)
-            if not stack.get("incomplete") else None
+            compute_regime_quality(stack) if not stack.get("incomplete") else None
         )
     except Exception:
         result["regime_quality"] = None
@@ -665,19 +681,16 @@ async def dashboard_v2(
                 surv_pct = (len(survivors) / len(durations_list)) * 100
                 hz = 0.0
                 if hour > 0 and survivors:
-                    exited = [
-                        d for d in durations_list
-                        if hour - 1 < d <= hour
-                    ]
+                    exited = [d for d in durations_list if hour - 1 < d <= hour]
                     hz = (len(exited) / len(survivors)) * 100
-                curve.append({
-                    "hour": hour,
-                    "survival": round(surv_pct, 2),
-                    "hazard": round(hz, 2),
-                })
-            result["survival_curve"] = {
-                "data": curve, "source": "historical"
-            }
+                curve.append(
+                    {
+                        "hour": hour,
+                        "survival": round(surv_pct, 2),
+                        "hazard": round(hz, 2),
+                    }
+                )
+            result["survival_curve"] = {"data": curve, "source": "historical"}
         else:
             result["survival_curve"] = {
                 "data": [
@@ -757,23 +770,15 @@ async def dashboard_v2(
         except Exception:
             result["discipline"] = None
         try:
-            result["behavioral_alpha"] = compute_behavioral_alpha_report(
-                email, db, 30
-            )
+            result["behavioral_alpha"] = compute_behavioral_alpha_report(email, db, 30)
         except Exception:
             result["behavioral_alpha"] = None
         try:
-            result["user_alerts"] = await evaluate_dynamic_alerts(
-                email, db
-            )
+            result["user_alerts"] = await evaluate_dynamic_alerts(email, db)
         except Exception:
             result["user_alerts"] = None
         try:
-            profile = (
-                db.query(UserProfile)
-                .filter(UserProfile.email == email)
-                .first()
-            )
+            profile = db.query(UserProfile).filter(UserProfile.email == email).first()
             result["user_profile"] = (
                 {
                     "risk_identity": profile.risk_identity,
@@ -781,7 +786,8 @@ async def dashboard_v2(
                     "max_drawdown_pct": profile.max_drawdown_pct,
                     "holding_period_days": profile.holding_period_days,
                 }
-                if profile else None
+                if profile
+                else None
             )
         except Exception:
             result["user_profile"] = None
@@ -805,6 +811,7 @@ async def premium_overview(
         return cached
 
     from app.services.market_data import build_regime_stack_bulk
+
     coins_data = []
     all_stacks = build_regime_stack_bulk(settings.SUPPORTED_COINS, db)
     for coin in settings.SUPPORTED_COINS:
@@ -822,29 +829,32 @@ async def premium_overview(
         except Exception:
             setup_score = setup_label = entry_mode = chase_risk = None
 
-        coins_data.append({
-            "coin": coin,
-            "macro": stack["macro"]["label"] if stack.get("macro") else None,
-            "trend": stack["trend"]["label"] if stack.get("trend") else None,
-            "execution": stack["execution"]["label"] if stack.get("execution") else None,
-            "alignment": stack.get("alignment"),
-            "direction": stack.get("direction"),
-            "exposure": stack.get("exposure"),
-            "shift_risk": stack.get("shift_risk"),
-            "hazard": stack.get("hazard"),
-            "survival": stack.get("survival"),
-            "quality_grade": quality["grade"],
-            "quality_score": quality["score"],
-            "setup_score": setup_score,
-            "setup_label": setup_label,
-            "entry_mode": entry_mode,
-            "chase_risk": chase_risk,
-        })
+        coins_data.append(
+            {
+                "coin": coin,
+                "macro": stack["macro"]["label"] if stack.get("macro") else None,
+                "trend": stack["trend"]["label"] if stack.get("trend") else None,
+                "execution": (
+                    stack["execution"]["label"] if stack.get("execution") else None
+                ),
+                "alignment": stack.get("alignment"),
+                "direction": stack.get("direction"),
+                "exposure": stack.get("exposure"),
+                "shift_risk": stack.get("shift_risk"),
+                "hazard": stack.get("hazard"),
+                "survival": stack.get("survival"),
+                "quality_grade": quality["grade"],
+                "quality_score": quality["score"],
+                "setup_score": setup_score,
+                "setup_label": setup_label,
+                "entry_mode": entry_mode,
+                "chase_risk": chase_risk,
+            }
+        )
 
     coins_data.sort(
         key=lambda x: (
-            (x.get("setup_score") or 0) * 0.5
-            + (x.get("quality_score") or 0) * 0.5
+            (x.get("setup_score") or 0) * 0.5 + (x.get("quality_score") or 0) * 0.5
         ),
         reverse=True,
     )
@@ -868,5 +878,3 @@ async def premium_overview(
     }
     cache_set("premium_overview", result, ttl=120)
     return result
-
-

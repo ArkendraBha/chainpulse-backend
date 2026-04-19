@@ -83,11 +83,13 @@ def survival_curve(
         if hour > 0 and survivors:
             exited = [d for d in durations if hour - 1 < d <= hour]
             hz = (len(exited) / len(survivors)) * 100
-        curve.append({
-            "hour": hour,
-            "survival": round(surv_pct, 2),
-            "hazard": round(hz, 2),
-        })
+        curve.append(
+            {
+                "hour": hour,
+                "survival": round(surv_pct, 2),
+                "hazard": round(hz, 2),
+            }
+        )
 
     response = {"data": curve, "source": "historical"}
     cache_set(cache_key, response, ttl=300)
@@ -212,8 +214,7 @@ def regime_quality_endpoint(
         **quality,
         "coin": coin,
         "regime": (
-            stack["execution"]["label"]
-            if stack.get("execution") else "Neutral"
+            stack["execution"]["label"] if stack.get("execution") else "Neutral"
         ),
         "exposure": stack.get("exposure"),
         "shift_risk": stack.get("shift_risk"),
@@ -264,10 +265,7 @@ def portfolio_allocator_endpoint(
     )
     return {
         **allocation,
-        "regime": (
-            stack["execution"]["label"]
-            if stack.get("execution") else "-"
-        ),
+        "regime": (stack["execution"]["label"] if stack.get("execution") else "-"),
         "confidence": confidence["score"],
         "alignment": stack["alignment"],
     }
@@ -308,10 +306,7 @@ def decision_engine_endpoint(
         breadth_score=breadth.get("breadth_score", 0),
         maturity_pct=maturity,
     )
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     decision["regime"] = exec_label
     decision["exposure"] = stack.get("exposure", 50)
     decision["coin"] = coin
@@ -334,10 +329,7 @@ def if_nothing_panel_endpoint(
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return {"error": "Insufficient data"}
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     return compute_if_nothing_panel(
         user_exposure=user_exposure,
         model_exposure=stack.get("exposure") or 50,
@@ -407,16 +399,9 @@ async def historical_analogs_endpoint(
     if stack["incomplete"]:
         return {"coin": coin, "error": "Insufficient regime data"}
 
-    macro_label = (
-        stack["macro"]["label"] if stack.get("macro") else "Neutral"
-    )
-    trend_label = (
-        stack["trend"]["label"] if stack.get("trend") else "Neutral"
-    )
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     hazard = stack.get("hazard") or 50
 
     result = await find_historical_analogs(
@@ -514,6 +499,7 @@ def what_changed_endpoint(
         get_or_compute_brief,
         compute_what_changed,
     )
+
     result = get_or_compute_brief(
         db=db,
         brief_type=f"what_changed_{lookback_hours}h",
@@ -527,7 +513,6 @@ def what_changed_endpoint(
     return result
 
 
-
 @router.get("/archetype-overlay")
 def archetype_overlay_endpoint(
     request: Request,
@@ -537,6 +522,7 @@ def archetype_overlay_endpoint(
     db: Session = Depends(get_db),
 ):
     from app.utils.enums import ARCHETYPE_CONFIG
+
     if coin not in settings.SUPPORTED_COINS:
         raise HTTPException(400, detail="Unsupported coin")
     if archetype not in ARCHETYPE_CONFIG:
@@ -553,6 +539,8 @@ def archetype_overlay_endpoint(
         db=db,
         email=email.strip().lower() if email else None,
     )
+
+
 # app/services/backtester.py
 import datetime
 from typing import List, Optional
@@ -643,24 +631,22 @@ def run_backtest(
             elif strategy == "buy_and_hold":
                 target_exposure = 1.0
             elif strategy == "risk_off_only":
-                target_exposure = (
-                    0.10 if "Risk-Off" in record.label else 0.80
-                )
+                target_exposure = 0.10 if "Risk-Off" in record.label else 0.80
             elif strategy == "momentum":
-                target_exposure = (
-                    0.85 if "Risk-On" in record.label else 0.05
-                )
+                target_exposure = 0.85 if "Risk-On" in record.label else 0.05
             else:
                 target_exposure = 0.5
 
             if abs(target_exposure - current_exposure) > 0.05:
-                trades.append({
-                    "timestamp": record.created_at.isoformat(),
-                    "regime": record.label,
-                    "old_exposure": round(current_exposure, 2),
-                    "new_exposure": round(target_exposure, 2),
-                    "reason": f"Rebalance to {record.label}",
-                })
+                trades.append(
+                    {
+                        "timestamp": record.created_at.isoformat(),
+                        "regime": record.label,
+                        "old_exposure": round(current_exposure, 2),
+                        "new_exposure": round(target_exposure, 2),
+                        "reason": f"Rebalance to {record.label}",
+                    }
+                )
                 current_exposure = target_exposure
                 last_rebalance = record.created_at
 
@@ -678,9 +664,7 @@ def run_backtest(
     final_equity = equity_curve[-1]
     final_benchmark = benchmark_curve[-1]
     total_return = ((final_equity - initial_capital) / initial_capital) * 100
-    benchmark_return_pct = (
-        (final_benchmark - initial_capital) / initial_capital
-    ) * 100
+    benchmark_return_pct = ((final_benchmark - initial_capital) / initial_capital) * 100
     alpha = total_return - benchmark_return_pct
 
     # Max drawdown
@@ -701,13 +685,8 @@ def run_backtest(
     ]
     if returns:
         avg_return = sum(returns) / len(returns)
-        std_return = (
-            sum((r - avg_return) ** 2 for r in returns) / len(returns)
-        ) ** 0.5
-        sharpe = (
-            (avg_return / std_return) * (8760 ** 0.5)
-            if std_return > 0 else 0
-        )
+        std_return = (sum((r - avg_return) ** 2 for r in returns) / len(returns)) ** 0.5
+        sharpe = (avg_return / std_return) * (8760**0.5) if std_return > 0 else 0
     else:
         sharpe = 0
 
@@ -729,9 +708,11 @@ def run_backtest(
     regime_summary = {
         label: {
             "hours": data["hours"],
-            "avg_hourly_return_pct": round(
-                data["return_sum"] / data["hours"] * 100, 4
-            ) if data["hours"] > 0 else 0,
+            "avg_hourly_return_pct": (
+                round(data["return_sum"] / data["hours"] * 100, 4)
+                if data["hours"] > 0
+                else 0
+            ),
         }
         for label, data in regime_performance.items()
     }
@@ -777,6 +758,7 @@ def run_backtest(
         ),
     }
 
+
 @router.get("/backtest/{coin}")
 def backtest_endpoint(
     request: Request,
@@ -790,9 +772,7 @@ def backtest_endpoint(
 
     if coin not in settings.SUPPORTED_COINS:
         raise HTTPException(400, detail="Unsupported coin")
-    if strategy not in [
-        "follow_model", "buy_and_hold", "risk_off_only", "momentum"
-    ]:
+    if strategy not in ["follow_model", "buy_and_hold", "risk_off_only", "momentum"]:
         raise HTTPException(400, detail="Invalid strategy")
     if not 7 <= days <= 365:
         raise HTTPException(400, detail="Days must be 7-365")
@@ -808,6 +788,7 @@ def backtest_endpoint(
     result = run_backtest(db, coin, start, end, strategy=strategy)
     cache_set(cache_key, result, ttl=3600)
     return result
+
 
 @router.get("/ai-narrative")
 async def ai_narrative_endpoint(
@@ -831,6 +812,7 @@ async def ai_narrative_endpoint(
 
     return await generate_regime_narrative(coin, stack)
 
+
 @router.get("/backtest/{coin}")
 def backtest_endpoint(
     request: Request,
@@ -852,6 +834,7 @@ def backtest_endpoint(
         raise HTTPException(400, detail="Unsupported coin")
 
     from app.services.backtester import STRATEGY_DESCRIPTIONS
+
     if strategy not in STRATEGY_DESCRIPTIONS:
         raise HTTPException(
             400,
@@ -920,6 +903,7 @@ def backtest_compare_endpoint(
         cache_set(cache_key, result, ttl=3600)
     return result
 
+
 @router.post("/monte-carlo-var")
 def monte_carlo_var_endpoint(
     request: Request,
@@ -965,9 +949,10 @@ def monte_carlo_var_endpoint(
     shift_risk = stack.get("shift_risk") or 50
 
     # Volatility score from regime conditions
-    vol_score = (hazard * 0.6 + shift_risk * 0.4)
+    vol_score = hazard * 0.6 + shift_risk * 0.4
 
     from app.core.cache import cache_get, cache_set
+
     cache_key = (
         f"mcvar:{coin}:{int(exposure_pct)}:{int(account_size)}:"
         f"{horizon_days}:{simulations}"
@@ -991,8 +976,7 @@ def monte_carlo_var_endpoint(
         "shift_risk": shift_risk,
         "volatility_score_used": round(vol_score, 1),
         "regime": (
-            stack["execution"]["label"]
-            if stack.get("execution") else "Unknown"
+            stack["execution"]["label"] if stack.get("execution") else "Unknown"
         ),
     }
 
@@ -1026,9 +1010,7 @@ def kelly_criterion_endpoint(
     if not 0 < win_rate < 1:
         raise HTTPException(400, detail="win_rate must be between 0 and 1")
     if avg_win_pct <= 0 or avg_loss_pct <= 0:
-        raise HTTPException(
-            400, detail="avg_win_pct and avg_loss_pct must be positive"
-        )
+        raise HTTPException(400, detail="avg_win_pct and avg_loss_pct must be positive")
     if account_size <= 0:
         raise HTTPException(400, detail="account_size must be positive")
 
@@ -1041,10 +1023,7 @@ def kelly_criterion_endpoint(
 
     stack = build_regime_stack(coin, db)
     hazard = stack.get("hazard") or 50
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
 
     return kelly_criterion(
         win_rate=win_rate,
@@ -1054,6 +1033,7 @@ def kelly_criterion_endpoint(
         regime_label=exec_label,
         hazard=hazard,
     )
+
 
 @router.get("/kelly-criterion")
 def kelly_criterion_endpoint(
@@ -1082,10 +1062,7 @@ def kelly_criterion_endpoint(
     stack = build_regime_stack(coin, db)
     hazard = stack.get("hazard") or 50
     regime_exposure = stack.get("exposure") or 50
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
 
     # Kelly formula: f = (bp - q) / b
     b = avg_win_pct / avg_loss_pct
@@ -1144,6 +1121,3 @@ def kelly_criterion_endpoint(
         ),
         "disclaimer": "Kelly Criterion is a mathematical framework. Not financial advice.",
     }
-
-
-

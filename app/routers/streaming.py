@@ -73,6 +73,7 @@ async def regime_websocket(
         return
 
     from app.auth.auth import resolve_user_tier
+
     user_info = resolve_user_tier(f"Bearer {token}", db)
     if not user_info["is_pro"]:
         await websocket.close(code=4003, reason="Pro subscription required")
@@ -88,14 +89,17 @@ async def regime_websocket(
     try:
         # Send current state immediately on connect
         from app.services.market_data import build_regime_stack
+
         stack = build_regime_stack(coin, db)
-        await websocket.send_json({
-            "type": "regime_snapshot",
-            "coin": coin,
-            "data": stack,
-            "timestamp": datetime.datetime.utcnow().isoformat(),
-            "connections": stream_manager.connection_count(coin),
-        })
+        await websocket.send_json(
+            {
+                "type": "regime_snapshot",
+                "coin": coin,
+                "data": stack,
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "connections": stream_manager.connection_count(coin),
+            }
+        )
 
         # Keep connection alive
         while True:
@@ -108,10 +112,12 @@ async def regime_websocket(
                     await websocket.send_text("pong")
             except asyncio.TimeoutError:
                 # Send heartbeat every 30s
-                await websocket.send_json({
-                    "type": "heartbeat",
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                })
+                await websocket.send_json(
+                    {
+                        "type": "heartbeat",
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                    }
+                )
 
     except WebSocketDisconnect:
         pass
@@ -138,9 +144,12 @@ async def push_regime_update(coin: str, stack: dict):
     Call this from update_market() to push live updates
     to all connected WebSocket clients for that coin.
     """
-    await stream_manager.broadcast_regime_update(coin, {
-        "type": "regime_update",
-        "coin": coin,
-        "data": stack,
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-    })
+    await stream_manager.broadcast_regime_update(
+        coin,
+        {
+            "type": "regime_update",
+            "coin": coin,
+            "data": stack,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+        },
+    )

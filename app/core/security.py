@@ -10,18 +10,12 @@ def constant_time_compare(secret: str):
     FIX 6: Constant-time compare for all secret checks.
     Replaces every `if secret != UPDATE_SECRET` across the codebase.
     """
-    if not hmac_lib.compare_digest(
-        secret or "",
-        settings.UPDATE_SECRET or ""
-    ):
+    if not hmac_lib.compare_digest(secret or "", settings.UPDATE_SECRET or ""):
         raise HTTPException(status_code=403, detail="Unauthorized")
 
 
 def get_auth_header(request: Request) -> Optional[str]:
-    return (
-        request.headers.get("authorization")
-        or request.headers.get("Authorization")
-    )
+    return request.headers.get("authorization") or request.headers.get("Authorization")
 
 
 def sign_webhook_payload(payload_str: str, secret: str) -> str:
@@ -31,5 +25,3 @@ def sign_webhook_payload(payload_str: str, secret: str) -> str:
         payload_str.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
-
-

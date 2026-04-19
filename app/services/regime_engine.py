@@ -8,19 +8,32 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.cache import cache_get, cache_set
 from app.db.models import (
-    ExposureLog, PerformanceEntry, UserProfile,
-    AlertThreshold, MarketSummary,
+    ExposureLog,
+    PerformanceEntry,
+    UserProfile,
+    AlertThreshold,
+    MarketSummary,
 )
 from app.services.market_data import (
-    get_klines, fetch_all_market_data,
-    build_regime_stack, compute_regime_quality,
-    compute_market_breadth, volatility_environment,
-    regime_durations, current_age, average_regime_duration,
-    trend_maturity_score, regime_transition_matrix,
-    compute_decision_score, volatility, volume_momentum,
+    get_klines,
+    fetch_all_market_data,
+    build_regime_stack,
+    compute_regime_quality,
+    compute_market_breadth,
+    volatility_environment,
+    regime_durations,
+    current_age,
+    average_regime_duration,
+    trend_maturity_score,
+    regime_transition_matrix,
+    compute_decision_score,
+    volatility,
+    volume_momentum,
 )
 from app.utils.enums import (
-    PLAYBOOK_DATA, ARCHETYPE_CONFIG, LEAK_TYPES,
+    PLAYBOOK_DATA,
+    ARCHETYPE_CONFIG,
+    LEAK_TYPES,
     DYNAMIC_RISK_EVENTS,
 )
 
@@ -83,7 +96,7 @@ def compute_volume_confirmation(volumes: list, period: int = 10) -> float:
     if len(volumes) < period * 2:
         return 50.0
     recent_avg = sum(volumes[-period:]) / period
-    prior_avg = sum(volumes[-period * 2:-period]) / period
+    prior_avg = sum(volumes[-period * 2 : -period]) / period
     if prior_avg == 0:
         return 50.0
     ratio = recent_avg / prior_avg
@@ -136,21 +149,11 @@ async def compute_setup_quality(
 
     if not stack.get("incomplete"):
         exec_label = (
-            stack["execution"]["label"]
-            if stack.get("execution") else "Neutral"
+            stack["execution"]["label"] if stack.get("execution") else "Neutral"
         )
-        trend_label = (
-            stack["trend"]["label"]
-            if stack.get("trend") else "Neutral"
-        )
-        macro_label = (
-            stack["macro"]["label"]
-            if stack.get("macro") else "Neutral"
-        )
-        coherence = (
-            stack["execution"]["coherence"]
-            if stack.get("execution") else 50.0
-        )
+        trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+        macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
+        coherence = stack["execution"]["coherence"] if stack.get("execution") else 50.0
         hazard = stack.get("hazard") or 50.0
         alignment = stack.get("alignment") or 50.0
 
@@ -181,70 +184,120 @@ async def compute_setup_quality(
     chase_risk = round(min(100, max(0, chase_risk)), 1)
 
     # Exhaustion
-    exhaustion = round(min(100, max(0,
-        min(100, abs(ext_20) * 6) * 0.25
-        + max(0, -mom_slope_1h * 10 if is_bullish_regime else mom_slope_1h * 10) * 0.25
-        + hazard * 0.25
-        + max(0, 100 - coherence) * 0.15
-        + max(0, 100 - alignment) * 0.10
-    )), 1)
+    exhaustion = round(
+        min(
+            100,
+            max(
+                0,
+                min(100, abs(ext_20) * 6) * 0.25
+                + max(0, -mom_slope_1h * 10 if is_bullish_regime else mom_slope_1h * 10)
+                * 0.25
+                + hazard * 0.25
+                + max(0, 100 - coherence) * 0.15
+                + max(0, 100 - alignment) * 0.10,
+            ),
+        ),
+        1,
+    )
 
     # Pullback Quality
     if is_bullish_regime:
-        pullback_quality = round(min(100, max(0,
-            min(100, pullback_depth * 15) * 0.30
-            + min(100, max(0, mom_slope_1h * 15 + 50)) * 0.25
-            + vol_confirm * 0.20
-            + coherence * 0.15
-            + (100 - hazard) * 0.10
-        )), 1)
+        pullback_quality = round(
+            min(
+                100,
+                max(
+                    0,
+                    min(100, pullback_depth * 15) * 0.30
+                    + min(100, max(0, mom_slope_1h * 15 + 50)) * 0.25
+                    + vol_confirm * 0.20
+                    + coherence * 0.15
+                    + (100 - hazard) * 0.10,
+                ),
+            ),
+            1,
+        )
     elif is_bearish_regime:
-        pullback_quality = round(min(100, max(0,
-            min(100, (100 - range_pos) * 1.2) * 0.30
-            + min(100, max(0, -mom_slope_1h * 15 + 50)) * 0.25
-            + vol_confirm * 0.20
-            + coherence * 0.15
-            + (100 - hazard) * 0.10
-        )), 1)
+        pullback_quality = round(
+            min(
+                100,
+                max(
+                    0,
+                    min(100, (100 - range_pos) * 1.2) * 0.30
+                    + min(100, max(0, -mom_slope_1h * 15 + 50)) * 0.25
+                    + vol_confirm * 0.20
+                    + coherence * 0.15
+                    + (100 - hazard) * 0.10,
+                ),
+            ),
+            1,
+        )
     else:
         pullback_quality = 30.0
 
     # Breakout Quality
-    breakout_quality = round(min(100, max(0,
-        (range_pos if is_bullish_regime else 100 - range_pos) * 0.25
-        + vol_confirm * 0.25
-        + coherence * 0.20
-        + alignment * 0.15
-        + (100 - hazard) * 0.15
-    )), 1)
+    breakout_quality = round(
+        min(
+            100,
+            max(
+                0,
+                (range_pos if is_bullish_regime else 100 - range_pos) * 0.25
+                + vol_confirm * 0.25
+                + coherence * 0.20
+                + alignment * 0.15
+                + (100 - hazard) * 0.15,
+            ),
+        ),
+        1,
+    )
 
     # Master Setup Score
     if is_bullish_regime:
-        setup_score = round(min(100, max(0,
-            (100 - chase_risk) * 0.25
-            + (100 - exhaustion) * 0.20
-            + pullback_quality * 0.20
-            + coherence * 0.15
-            + (100 - hazard) * 0.10
-            + alignment * 0.10
-        )), 1)
+        setup_score = round(
+            min(
+                100,
+                max(
+                    0,
+                    (100 - chase_risk) * 0.25
+                    + (100 - exhaustion) * 0.20
+                    + pullback_quality * 0.20
+                    + coherence * 0.15
+                    + (100 - hazard) * 0.10
+                    + alignment * 0.10,
+                ),
+            ),
+            1,
+        )
     elif is_bearish_regime:
-        setup_score = round(min(100, max(0,
-            (100 - chase_risk) * 0.20
-            + exhaustion * 0.15
-            + (100 - hazard) * 0.20
-            + coherence * 0.15
-            + (100 - range_pos) * 0.15
-            + alignment * 0.15
-        )), 1)
+        setup_score = round(
+            min(
+                100,
+                max(
+                    0,
+                    (100 - chase_risk) * 0.20
+                    + exhaustion * 0.15
+                    + (100 - hazard) * 0.20
+                    + coherence * 0.15
+                    + (100 - range_pos) * 0.15
+                    + alignment * 0.15,
+                ),
+            ),
+            1,
+        )
     else:
-        setup_score = round(min(100, max(0,
-            (100 - chase_risk) * 0.25
-            + (100 - abs(ext_20) * 5) * 0.20
-            + vol_confirm * 0.15
-            + coherence * 0.20
-            + (100 - hazard) * 0.20
-        )), 1)
+        setup_score = round(
+            min(
+                100,
+                max(
+                    0,
+                    (100 - chase_risk) * 0.25
+                    + (100 - abs(ext_20) * 5) * 0.20
+                    + vol_confirm * 0.15
+                    + coherence * 0.20
+                    + (100 - hazard) * 0.20,
+                ),
+            ),
+            1,
+        )
 
     if setup_score >= 80:
         setup_label = "Excellent Setup"
@@ -297,8 +350,7 @@ async def compute_setup_quality(
         normal_stop = round(atr_1h * 2.5, 2)
         wide_stop = round(atr_1h * 4.0, 2)
         stop_pct = (
-            round((normal_stop / current_price) * 100, 2)
-            if current_price > 0 else 0
+            round((normal_stop / current_price) * 100, 2) if current_price > 0 else 0
         )
     else:
         tight_stop = normal_stop = wide_stop = stop_pct = 0
@@ -344,9 +396,7 @@ async def compute_setup_quality(
 # -----------------------------------------
 # OPPORTUNITY RANKING
 # -----------------------------------------
-async def compute_opportunity_score(
-    coin: str, db: Session
-) -> Optional[dict]:
+async def compute_opportunity_score(coin: str, db: Session) -> Optional[dict]:
     stack = build_regime_stack(coin, db)
     if stack["incomplete"]:
         return None
@@ -368,9 +418,7 @@ async def compute_opportunity_score(
 
     direction = stack.get("direction") or "mixed"
     direction_mult = (
-        1.0 if direction == "bullish"
-        else 0.7 if direction == "mixed"
-        else 0.4
+        1.0 if direction == "bullish" else 0.7 if direction == "mixed" else 0.4
     )
 
     raw_score = (
@@ -434,9 +482,7 @@ async def compute_opportunity_ranking(db: Session) -> dict:
         if opp:
             rankings.append(opp)
 
-    rankings.sort(
-        key=lambda x: x["opportunity_score"], reverse=True
-    )
+    rankings.sort(key=lambda x: x["opportunity_score"], reverse=True)
 
     best_long = None
     most_defensive = None
@@ -451,9 +497,7 @@ async def compute_opportunity_ranking(db: Session) -> dict:
             avoid.append(r["coin"])
 
     if not most_defensive and rankings:
-        most_defensive = min(
-            rankings, key=lambda x: x["shift_risk"]
-        )["coin"]
+        most_defensive = min(rankings, key=lambda x: x["shift_risk"])["coin"]
 
     rotation_signals = []
     if len(rankings) >= 2:
@@ -556,9 +600,10 @@ async def find_historical_analogs(
                 if best_delta is None or delta < best_delta:
                     best_delta = delta
                     best = r.label
-                if r.created_at > ts and (
-                    r.created_at - ts
-                ).total_seconds() > window_hours * 3600:
+                if (
+                    r.created_at > ts
+                    and (r.created_at - ts).total_seconds() > window_hours * 3600
+                ):
                     break
             return best
 
@@ -587,8 +632,7 @@ async def find_historical_analogs(
 
         if len(forward_prices) >= 24:
             labels_forward = [
-                records_list[j].label
-                for j in range(i, min(i + 72, len(records_list)))
+                records_list[j].label for j in range(i, min(i + 72, len(records_list)))
             ]
             same_count = 0
             for lbl in labels_forward:
@@ -597,15 +641,17 @@ async def find_historical_analogs(
                 else:
                     break
 
-            matching_periods.append({
-                "date": r.created_at.strftime("%Y-%m-%d %H:%M"),
-                "label": r.label,
-                "score": r.score,
-                "coherence": r.coherence,
-                "continuation_hours": same_count,
-                "matched_macro": macro_label_at_time or "unknown",
-                "matched_trend": trend_label_at_time or "unknown",
-            })
+            matching_periods.append(
+                {
+                    "date": r.created_at.strftime("%Y-%m-%d %H:%M"),
+                    "label": r.label,
+                    "score": r.score,
+                    "coherence": r.coherence,
+                    "continuation_hours": same_count,
+                    "matched_macro": macro_label_at_time or "unknown",
+                    "matched_trend": trend_label_at_time or "unknown",
+                }
+            )
 
     if len(matching_periods) < 3:
         matching_periods = []
@@ -627,15 +673,17 @@ async def find_historical_analogs(
                         same_count += 1
                     else:
                         break
-                matching_periods.append({
-                    "date": r.created_at.strftime("%Y-%m-%d %H:%M"),
-                    "label": r.label,
-                    "score": r.score,
-                    "coherence": r.coherence,
-                    "continuation_hours": same_count,
-                    "matched_macro": "relaxed",
-                    "matched_trend": "relaxed",
-                })
+                matching_periods.append(
+                    {
+                        "date": r.created_at.strftime("%Y-%m-%d %H:%M"),
+                        "label": r.label,
+                        "score": r.score,
+                        "coherence": r.coherence,
+                        "continuation_hours": same_count,
+                        "matched_macro": "relaxed",
+                        "matched_trend": "relaxed",
+                    }
+                )
 
     match_type = "multi_timeframe"
     if matching_periods and matching_periods[0].get("matched_macro") == "relaxed":
@@ -652,9 +700,7 @@ async def find_historical_analogs(
         }
 
     current_price = prices_1h[-1] if prices_1h else 0
-    continuation_hours_list = [
-        m["continuation_hours"] for m in matching_periods
-    ]
+    continuation_hours_list = [m["continuation_hours"] for m in matching_periods]
     avg_continuation = sum(continuation_hours_list) / len(continuation_hours_list)
     max_continuation = max(continuation_hours_list)
     min_continuation = min(continuation_hours_list)
@@ -676,9 +722,7 @@ async def find_historical_analogs(
     if len(prices_1d) >= 10:
         daily_returns = []
         for i in range(1, len(prices_1d)):
-            ret = (
-                (prices_1d[i] - prices_1d[i - 1]) / prices_1d[i - 1]
-            ) * 100
+            ret = ((prices_1d[i] - prices_1d[i - 1]) / prices_1d[i - 1]) * 100
             daily_returns.append(ret)
 
         if daily_returns:
@@ -688,7 +732,7 @@ async def find_historical_analogs(
                     for i in range(len(daily_returns) - days + 1):
                         compound = 1.0
                         for j in range(days):
-                            compound *= (1 + daily_returns[i + j] / 100)
+                            compound *= 1 + daily_returns[i + j] / 100
                         fwd_rets.append(round((compound - 1) * 100, 2))
 
                     if fwd_rets:
@@ -699,21 +743,24 @@ async def find_historical_analogs(
                             "best": sorted_rets[-1],
                             "worst": sorted_rets[0],
                             "positive_pct": round(
-                                sum(1 for r in fwd_rets if r > 0) / len(fwd_rets) * 100, 1
+                                sum(1 for r in fwd_rets if r > 0) / len(fwd_rets) * 100,
+                                1,
                             ),
                         }
 
     mae_estimates = []
     if len(prices_1h) >= 48:
         for i in range(24, len(prices_1h)):
-            window = prices_1h[i - 24:i]
+            window = prices_1h[i - 24 : i]
             low = min(window)
             entry = window[0]
             if entry > 0:
                 mae = ((low - entry) / entry) * 100
                 mae_estimates.append(round(mae, 2))
 
-    avg_mae = round(sum(mae_estimates) / len(mae_estimates), 2) if mae_estimates else -3.0
+    avg_mae = (
+        round(sum(mae_estimates) / len(mae_estimates), 2) if mae_estimates else -3.0
+    )
     worst_mae = min(mae_estimates) if mae_estimates else -8.0
 
     if mae_estimates:
@@ -769,15 +816,9 @@ async def compute_scenarios(
     if stack.get("incomplete"):
         return {"coin": coin, "error": "Insufficient data"}
 
-    exec_label = (
-        stack["execution"]["label"] if stack.get("execution") else "Neutral"
-    )
-    trend_label = (
-        stack["trend"]["label"] if stack.get("trend") else "Neutral"
-    )
-    macro_label = (
-        stack["macro"]["label"] if stack.get("macro") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
 
     hazard = stack.get("hazard") or 50
     survival = stack.get("survival") or 50
@@ -795,16 +836,25 @@ async def compute_scenarios(
 
     regime_num = settings.REGIME_NUMERIC.get(exec_label, 0)
 
-    base_prob = round(min(75, max(25,
-        survival * 0.40
-        + (100 - hazard) * 0.30
-        + alignment * 0.15
-        + (100 - shift_risk) * 0.15
-    )), 0)
+    base_prob = round(
+        min(
+            75,
+            max(
+                25,
+                survival * 0.40
+                + (100 - hazard) * 0.30
+                + alignment * 0.15
+                + (100 - shift_risk) * 0.15,
+            ),
+        ),
+        0,
+    )
 
     if regime_num > 0:
         base_outcome = "Regime continuation - trend maintains current direction"
-        base_exposure = f"Maintain {int(exposure * 0.9)}-{int(min(95, exposure * 1.1))}%"
+        base_exposure = (
+            f"Maintain {int(exposure * 0.9)}-{int(min(95, exposure * 1.1))}%"
+        )
         base_actions = [
             "Hold existing positions",
             "Trail stops to recent support",
@@ -820,7 +870,9 @@ async def compute_scenarios(
         ]
     else:
         base_outcome = "Range-bound continuation - neutral positioning"
-        base_exposure = f"Maintain {int(max(5, exposure * 0.85))}-{int(min(95, exposure * 1.15))}%"
+        base_exposure = (
+            f"Maintain {int(max(5, exposure * 0.85))}-{int(min(95, exposure * 1.15))}%"
+        )
         base_actions = [
             "Reduce position sizes",
             "Wait for directional clarity",
@@ -828,13 +880,20 @@ async def compute_scenarios(
         ]
 
     if regime_num >= 0:
-        bull_prob = round(min(45, max(5,
-            (100 - hazard) * 0.25
-            + alignment * 0.20
-            + setup_score * 0.20
-            + (100 - exhaustion) * 0.20
-            + survival * 0.15
-        )), 0)
+        bull_prob = round(
+            min(
+                45,
+                max(
+                    5,
+                    (100 - hazard) * 0.25
+                    + alignment * 0.20
+                    + setup_score * 0.20
+                    + (100 - exhaustion) * 0.20
+                    + survival * 0.15,
+                ),
+            ),
+            0,
+        )
         bull_outcome = "Breakout to higher - regime upgrades to stronger risk-on"
         bull_exposure = f"Increase to {int(min(95, exposure * 1.3))}-{int(min(95, exposure * 1.5))}%"
         bull_invalidation = "1h regime downgrades or hazard > 70%"
@@ -844,12 +903,19 @@ async def compute_scenarios(
             "Extend targets",
         ]
     else:
-        bull_prob = round(min(35, max(5,
-            hazard * 0.30
-            + exhaustion * 0.25
-            + (100 - survival) * 0.25
-            + shift_risk * 0.20
-        )), 0)
+        bull_prob = round(
+            min(
+                35,
+                max(
+                    5,
+                    hazard * 0.30
+                    + exhaustion * 0.25
+                    + (100 - survival) * 0.25
+                    + shift_risk * 0.20,
+                ),
+            ),
+            0,
+        )
         bull_outcome = "Relief bounce - regime stabilizes and shifts toward Neutral"
         bull_exposure = f"Cautiously increase to {int(min(60, exposure * 1.5))}-{int(min(70, exposure * 2.0))}%"
         bull_invalidation = "New momentum lows or hazard re-acceleration"
@@ -860,14 +926,23 @@ async def compute_scenarios(
         ]
 
     if regime_num <= 0:
-        bear_prob = round(min(45, max(5,
-            hazard * 0.30
-            + shift_risk * 0.25
-            + (100 - alignment) * 0.20
-            + (100 - survival) * 0.25
-        )), 0)
+        bear_prob = round(
+            min(
+                45,
+                max(
+                    5,
+                    hazard * 0.30
+                    + shift_risk * 0.25
+                    + (100 - alignment) * 0.20
+                    + (100 - survival) * 0.25,
+                ),
+            ),
+            0,
+        )
         bear_outcome = "Accelerated sell-off - regime deteriorates further"
-        bear_exposure = f"Reduce to {int(max(0, exposure * 0.3))}-{int(max(5, exposure * 0.5))}%"
+        bear_exposure = (
+            f"Reduce to {int(max(0, exposure * 0.3))}-{int(max(5, exposure * 0.5))}%"
+        )
         bear_invalidation = "Strong reversal with volume and 4h regime upgrade"
         bear_actions = [
             "Exit remaining positions",
@@ -875,14 +950,23 @@ async def compute_scenarios(
             "Do not attempt to catch bottom",
         ]
     else:
-        bear_prob = round(min(40, max(5,
-            hazard * 0.30
-            + exhaustion * 0.25
-            + shift_risk * 0.25
-            + (100 - alignment) * 0.20
-        )), 0)
+        bear_prob = round(
+            min(
+                40,
+                max(
+                    5,
+                    hazard * 0.30
+                    + exhaustion * 0.25
+                    + shift_risk * 0.25
+                    + (100 - alignment) * 0.20,
+                ),
+            ),
+            0,
+        )
         bear_outcome = "Regime failure - trend breaks and shifts to Risk-Off"
-        bear_exposure = f"Reduce to {int(max(5, exposure * 0.4))}-{int(max(10, exposure * 0.6))}%"
+        bear_exposure = (
+            f"Reduce to {int(max(5, exposure * 0.4))}-{int(max(10, exposure * 0.6))}%"
+        )
         bear_invalidation = "Structural break of 4h trend support"
         bear_actions = [
             "Reduce exposure immediately",
@@ -925,9 +1009,7 @@ async def compute_scenarios(
 
     invalidation_triggers = []
     if hazard > 50:
-        invalidation_triggers.append(
-            f"Hazard at {hazard}% - approaching instability"
-        )
+        invalidation_triggers.append(f"Hazard at {hazard}% - approaching instability")
     if shift_risk > 55:
         invalidation_triggers.append(
             f"Shift risk at {shift_risk}% - transition pressure building"
@@ -1010,8 +1092,7 @@ async def compute_internal_damage(
     # Coherence Rollover
     if len(records_1h) >= 6:
         recent_coherence = [
-            r.coherence for r in records_1h[-6:]
-            if r.coherence is not None
+            r.coherence for r in records_1h[-6:] if r.coherence is not None
         ]
         if len(recent_coherence) >= 4:
             avg_recent = sum(recent_coherence[-3:]) / 3
@@ -1025,19 +1106,23 @@ async def compute_internal_damage(
                 for i in range(1, len(recent_coherence))
             )
             if declining and coherence_decline > 5:
-                signals.append({
-                    "type": "coherence_rollover",
-                    "severity": "high" if coherence_decline > 15 else "medium",
-                    "message": f"Coherence declined {coherence_decline} pts over last 6 updates",
-                    "value": coherence_decline,
-                })
+                signals.append(
+                    {
+                        "type": "coherence_rollover",
+                        "severity": "high" if coherence_decline > 15 else "medium",
+                        "message": f"Coherence declined {coherence_decline} pts over last 6 updates",
+                        "value": coherence_decline,
+                    }
+                )
             elif coherence_decline > 3:
-                signals.append({
-                    "type": "coherence_weakening",
-                    "severity": "low",
-                    "message": f"Coherence weakening by {coherence_decline} pts",
-                    "value": coherence_decline,
-                })
+                signals.append(
+                    {
+                        "type": "coherence_weakening",
+                        "severity": "low",
+                        "message": f"Coherence weakening by {coherence_decline} pts",
+                        "value": coherence_decline,
+                    }
+                )
         else:
             damage_components["coherence_rollover"] = 0
     else:
@@ -1057,26 +1142,26 @@ async def compute_internal_damage(
 
             if price_direction > 0 and score_direction < -3:
                 div_strength = abs(score_direction)
-                damage_components["momentum_divergence"] = min(
-                    100, div_strength * 5
+                damage_components["momentum_divergence"] = min(100, div_strength * 5)
+                signals.append(
+                    {
+                        "type": "bearish_divergence",
+                        "severity": "high" if div_strength > 10 else "medium",
+                        "message": f"Price rising but regime score declining ({round(score_direction, 1)} pts)",
+                        "value": round(score_direction, 1),
+                    }
                 )
-                signals.append({
-                    "type": "bearish_divergence",
-                    "severity": "high" if div_strength > 10 else "medium",
-                    "message": f"Price rising but regime score declining ({round(score_direction, 1)} pts)",
-                    "value": round(score_direction, 1),
-                })
             elif price_direction < 0 and score_direction > 3:
                 div_strength = abs(score_direction)
-                damage_components["momentum_divergence"] = min(
-                    100, div_strength * 3
+                damage_components["momentum_divergence"] = min(100, div_strength * 3)
+                signals.append(
+                    {
+                        "type": "bullish_divergence",
+                        "severity": "medium",
+                        "message": f"Price falling but regime score improving (+{round(score_direction, 1)} pts)",
+                        "value": round(score_direction, 1),
+                    }
                 )
-                signals.append({
-                    "type": "bullish_divergence",
-                    "severity": "medium",
-                    "message": f"Price falling but regime score improving (+{round(score_direction, 1)} pts)",
-                    "value": round(score_direction, 1),
-                })
             else:
                 damage_components["momentum_divergence"] = 0
         else:
@@ -1097,56 +1182,56 @@ async def compute_internal_damage(
         macro_num = settings.REGIME_NUMERIC.get(
             stack["macro"]["label"] if stack.get("macro") else "Neutral", 0
         )
-        tf_spread = (
-            max(exec_num, trend_num, macro_num)
-            - min(exec_num, trend_num, macro_num)
+        tf_spread = max(exec_num, trend_num, macro_num) - min(
+            exec_num, trend_num, macro_num
         )
         damage_components["timeframe_divergence"] = min(100, tf_spread * 25)
 
         if tf_spread >= 3:
-            signals.append({
-                "type": "timeframe_conflict",
-                "severity": "high",
-                "message": "Major timeframe disagreement - macro and execution regimes conflict",
-                "value": tf_spread,
-            })
+            signals.append(
+                {
+                    "type": "timeframe_conflict",
+                    "severity": "high",
+                    "message": "Major timeframe disagreement - macro and execution regimes conflict",
+                    "value": tf_spread,
+                }
+            )
         elif tf_spread >= 2:
-            signals.append({
-                "type": "timeframe_tension",
-                "severity": "medium",
-                "message": "Timeframe tension - trend and execution regimes misaligned",
-                "value": tf_spread,
-            })
+            signals.append(
+                {
+                    "type": "timeframe_tension",
+                    "severity": "medium",
+                    "message": "Timeframe tension - trend and execution regimes misaligned",
+                    "value": tf_spread,
+                }
+            )
     else:
         damage_components["timeframe_divergence"] = 0
 
     # Volatility Expansion
     if len(records_1h) >= 8:
-        recent_vol = [
-            r.volatility_val for r in records_1h[-4:]
-            if r.volatility_val
-        ]
-        prior_vol = [
-            r.volatility_val for r in records_1h[-8:-4]
-            if r.volatility_val
-        ]
+        recent_vol = [r.volatility_val for r in records_1h[-4:] if r.volatility_val]
+        prior_vol = [r.volatility_val for r in records_1h[-8:-4] if r.volatility_val]
         if recent_vol and prior_vol:
             avg_recent_vol = sum(recent_vol) / len(recent_vol)
             avg_prior_vol = sum(prior_vol) / len(prior_vol)
             vol_expansion = (
                 ((avg_recent_vol - avg_prior_vol) / avg_prior_vol) * 100
-                if avg_prior_vol > 0 else 0
+                if avg_prior_vol > 0
+                else 0
             )
             damage_components["volatility_expansion"] = min(
                 100, max(0, vol_expansion * 2)
             )
             if vol_expansion > 30:
-                signals.append({
-                    "type": "volatility_expansion",
-                    "severity": "high" if vol_expansion > 60 else "medium",
-                    "message": f"Volatility expanding {round(vol_expansion, 1)}% - instability rising",
-                    "value": round(vol_expansion, 1),
-                })
+                signals.append(
+                    {
+                        "type": "volatility_expansion",
+                        "severity": "high" if vol_expansion > 60 else "medium",
+                        "message": f"Volatility expanding {round(vol_expansion, 1)}% - instability rising",
+                        "value": round(vol_expansion, 1),
+                    }
+                )
         else:
             damage_components["volatility_expansion"] = 0
     else:
@@ -1163,25 +1248,25 @@ async def compute_internal_damage(
         current_num = settings.REGIME_NUMERIC.get(current_label, 0)
 
         if current_num > 0 and score_drift < -3:
-            damage_components["score_deterioration"] = min(
-                100, abs(score_drift) * 5
+            damage_components["score_deterioration"] = min(100, abs(score_drift) * 5)
+            signals.append(
+                {
+                    "type": "score_deterioration",
+                    "severity": "medium" if abs(score_drift) > 8 else "low",
+                    "message": f"Regime score drifting lower ({round(score_drift, 1)} pts) within bullish regime",
+                    "value": round(score_drift, 1),
+                }
             )
-            signals.append({
-                "type": "score_deterioration",
-                "severity": "medium" if abs(score_drift) > 8 else "low",
-                "message": f"Regime score drifting lower ({round(score_drift, 1)} pts) within bullish regime",
-                "value": round(score_drift, 1),
-            })
         elif current_num < 0 and score_drift > 3:
-            damage_components["score_deterioration"] = min(
-                100, abs(score_drift) * 3
+            damage_components["score_deterioration"] = min(100, abs(score_drift) * 3)
+            signals.append(
+                {
+                    "type": "score_improvement",
+                    "severity": "low",
+                    "message": f"Score improving within Risk-Off ({round(score_drift, 1)} pts) - watch for regime shift",
+                    "value": round(score_drift, 1),
+                }
             )
-            signals.append({
-                "type": "score_improvement",
-                "severity": "low",
-                "message": f"Score improving within Risk-Off ({round(score_drift, 1)} pts) - watch for regime shift",
-                "value": round(score_drift, 1),
-            })
         else:
             damage_components["score_deterioration"] = 0
     else:
@@ -1194,20 +1279,22 @@ async def compute_internal_damage(
         "volatility_expansion": 0.15,
         "score_deterioration": 0.15,
     }
-    damage_score = sum(
-        damage_components.get(c, 0) * w for c, w in weights.items()
-    )
+    damage_score = sum(damage_components.get(c, 0) * w for c, w in weights.items())
     damage_score = round(min(100, max(0, damage_score)), 1)
 
     if damage_score >= 70:
         damage_label = "Severe"
-        damage_message = "Internal structure heavily damaged. Regime likely to shift soon."
+        damage_message = (
+            "Internal structure heavily damaged. Regime likely to shift soon."
+        )
     elif damage_score >= 50:
         damage_label = "Moderate"
         damage_message = "Internal weakening detected. Reduce new risk. Tighten stops."
     elif damage_score >= 30:
         damage_label = "Mild"
-        damage_message = "Minor internal stress. Monitor but no immediate action required."
+        damage_message = (
+            "Minor internal stress. Monitor but no immediate action required."
+        )
     else:
         damage_label = "Healthy"
         damage_message = "Internal structure intact. Trend supported by internals."
@@ -1219,15 +1306,11 @@ async def compute_internal_damage(
         "damage_message": damage_message,
         "signals": sorted(
             signals,
-            key=lambda x: {"high": 0, "medium": 1, "low": 2}.get(
-                x["severity"], 3
-            ),
+            key=lambda x: {"high": 0, "medium": 1, "low": 2}.get(x["severity"], 3),
         ),
         "components": damage_components,
         "signal_count": len(signals),
-        "high_severity_count": sum(
-            1 for s in signals if s["severity"] == "high"
-        ),
+        "high_severity_count": sum(1 for s in signals if s["severity"] == "high"),
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
 
@@ -1258,15 +1341,9 @@ async def compute_trade_plan(
     current_price = setup.get("current_price") or 0
     atr_1h = setup.get("atr_1h") or 0
 
-    exec_label = (
-        stack["execution"]["label"] if stack.get("execution") else "Neutral"
-    )
-    trend_label = (
-        stack["trend"]["label"] if stack.get("trend") else "Neutral"
-    )
-    macro_label = (
-        stack["macro"]["label"] if stack.get("macro") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
+    trend_label = stack["trend"]["label"] if stack.get("trend") else "Neutral"
+    macro_label = stack["macro"]["label"] if stack.get("macro") else "Neutral"
     exposure = stack.get("exposure") or 50
     hazard = stack.get("hazard") or 50
     shift_risk = stack.get("shift_risk") or 50
@@ -1274,14 +1351,10 @@ async def compute_trade_plan(
     regime_num = settings.REGIME_NUMERIC.get(exec_label, 0)
 
     risk_mult = 1.0
-    archetype_config = ARCHETYPE_CONFIG.get(
-        strategy_mode, ARCHETYPE_CONFIG["swing"]
-    )
+    archetype_config = ARCHETYPE_CONFIG.get(strategy_mode, ARCHETYPE_CONFIG["swing"])
 
     if email:
-        profile = db.query(UserProfile).filter(
-            UserProfile.email == email
-        ).first()
+        profile = db.query(UserProfile).filter(UserProfile.email == email).first()
         if profile:
             risk_mult = profile.risk_multiplier or 1.0
 
@@ -1313,22 +1386,16 @@ async def compute_trade_plan(
 
     tranches = archetype_config["typical_tranches"]
     deployed_capital = round(account_size * adjusted_exposure / 100, 2)
-    tranche_amounts = [
-        round(deployed_capital * (t / 100), 2) for t in tranches
-    ]
+    tranche_amounts = [round(deployed_capital * (t / 100), 2) for t in tranches]
 
     stop_mult = archetype_config["stop_width_mult"]
     if atr_1h > 0 and current_price > 0:
         if regime_num >= 0:
             stop_price = round(current_price - atr_1h * 2.5 * stop_mult, 2)
-            stop_pct = round(
-                ((current_price - stop_price) / current_price) * 100, 2
-            )
+            stop_pct = round(((current_price - stop_price) / current_price) * 100, 2)
         else:
             stop_price = round(current_price + atr_1h * 2.5 * stop_mult, 2)
-            stop_pct = round(
-                ((stop_price - current_price) / current_price) * 100, 2
-            )
+            stop_pct = round(((stop_price - current_price) / current_price) * 100, 2)
     else:
         stop_price = 0
         stop_pct = 3.0
@@ -1373,40 +1440,56 @@ async def compute_trade_plan(
 
     conditional = []
     if regime_num > 0:
-        conditional.append({
-            "condition": "Price pulls back 2-3%",
-            "action": "Deploy next tranche",
-        })
-        conditional.append({
-            "condition": "Hazard exceeds 65%",
-            "action": "Tighten stops and reduce by 20%",
-        })
-        conditional.append({
-            "condition": "Regime shifts to Neutral",
-            "action": "Close 50% and trail remainder",
-        })
-        conditional.append({
-            "condition": "Shift risk exceeds 75%",
-            "action": "Reduce to minimum allocation",
-        })
+        conditional.append(
+            {
+                "condition": "Price pulls back 2-3%",
+                "action": "Deploy next tranche",
+            }
+        )
+        conditional.append(
+            {
+                "condition": "Hazard exceeds 65%",
+                "action": "Tighten stops and reduce by 20%",
+            }
+        )
+        conditional.append(
+            {
+                "condition": "Regime shifts to Neutral",
+                "action": "Close 50% and trail remainder",
+            }
+        )
+        conditional.append(
+            {
+                "condition": "Shift risk exceeds 75%",
+                "action": "Reduce to minimum allocation",
+            }
+        )
     elif regime_num < 0:
-        conditional.append({
-            "condition": "Regime upgrades to Neutral",
-            "action": "Scout small positions with tight stops",
-        })
-        conditional.append({
-            "condition": "Capitulation signals appear",
-            "action": "Begin deploying first tranche cautiously",
-        })
+        conditional.append(
+            {
+                "condition": "Regime upgrades to Neutral",
+                "action": "Scout small positions with tight stops",
+            }
+        )
+        conditional.append(
+            {
+                "condition": "Capitulation signals appear",
+                "action": "Begin deploying first tranche cautiously",
+            }
+        )
     else:
-        conditional.append({
-            "condition": "Regime stack aligns bullish",
-            "action": "Deploy first two tranches",
-        })
-        conditional.append({
-            "condition": "Regime stack aligns bearish",
-            "action": "Move to full cash",
-        })
+        conditional.append(
+            {
+                "condition": "Regime stack aligns bullish",
+                "action": "Deploy first two tranches",
+            }
+        )
+        conditional.append(
+            {
+                "condition": "Regime stack aligns bearish",
+                "action": "Move to full cash",
+            }
+        )
 
     max_hold = archetype_config["max_hold_days"]
     avg_regime_dur = average_regime_duration(db, coin, "1h")
@@ -1459,19 +1542,11 @@ async def compute_trade_plan(
 # -----------------------------------------
 # EVENT RISK OVERLAY
 # -----------------------------------------
-def compute_event_risk_overlay(
-    coin: str, db: Session, stack: dict = None
-) -> dict:
+def compute_event_risk_overlay(coin: str, db: Session, stack: dict = None) -> dict:
     if stack is None:
         stack = build_regime_stack(coin, db)
-    exposure = (
-        stack.get("exposure") or 50
-        if not stack.get("incomplete") else 50
-    )
-    hazard = (
-        stack.get("hazard") or 50
-        if not stack.get("incomplete") else 50
-    )
+    exposure = stack.get("exposure") or 50 if not stack.get("incomplete") else 50
+    hazard = stack.get("hazard") or 50 if not stack.get("incomplete") else 50
 
     now = datetime.datetime.utcnow()
 
@@ -1520,20 +1595,14 @@ def compute_event_risk_overlay(
         if "weekday" in schedule:
             target_wd = schedule["weekday"]
             days_ahead = (target_wd - now.weekday()) % 7
-            hours_until = (
-                max(1, 24 - now.hour)
-                if days_ahead == 0
-                else days_ahead * 24
-            )
+            hours_until = max(1, 24 - now.hour) if days_ahead == 0 else days_ahead * 24
         elif "day_of_month_range" in schedule:
             low, high = schedule["day_of_month_range"]
             if now.month in schedule.get("months", []):
                 if now.day < low:
                     hours_until = (low - now.day) * 24
                 elif now.day <= high:
-                    hours_until = max(
-                        1, (high - now.day) * 24 + (24 - now.hour)
-                    )
+                    hours_until = max(1, (high - now.day) * 24 + (24 - now.hour))
                 else:
                     hours_until = (30 - now.day + low) * 24
             else:
@@ -1552,9 +1621,7 @@ def compute_event_risk_overlay(
 
     if imminent:
         max_vol_mult = max(e["typical_vol_multiplier"] for e in imminent)
-        max_survival_impact = min(
-            e["regime_survival_impact"] for e in imminent
-        )
+        max_survival_impact = min(e["regime_survival_impact"] for e in imminent)
     else:
         max_vol_mult = 1.0
         max_survival_impact = 0
@@ -1574,35 +1641,34 @@ def compute_event_risk_overlay(
         adjustment_label = "No Adjustment"
         adjustment_message = "No imminent high-impact events."
 
-    adjusted_exposure = round(
-        max(5, min(95, exposure + exposure_adjustment)), 1
-    )
+    adjusted_exposure = round(max(5, min(95, exposure + exposure_adjustment)), 1)
     survival_current = (
-        stack.get("survival") or 50
-        if not stack.get("incomplete") else 50
+        stack.get("survival") or 50 if not stack.get("incomplete") else 50
     )
-    survival_adjusted = round(
-        max(0, survival_current + max_survival_impact), 1
-    )
+    survival_adjusted = round(max(0, survival_current + max_survival_impact), 1)
 
     event_guidance = []
     for e in imminent[:3]:
         if e["impact"] == "High":
-            event_guidance.append({
-                "event": e["name"],
-                "hours_until": e["hours_until"],
-                "action": f"Reduce position size by 15-25% ahead of {e['name']}",
-                "volatility_multiplier": e["typical_vol_multiplier"],
-                "stop_guidance": "Widen stops by 50% or reduce size equivalent",
-            })
+            event_guidance.append(
+                {
+                    "event": e["name"],
+                    "hours_until": e["hours_until"],
+                    "action": f"Reduce position size by 15-25% ahead of {e['name']}",
+                    "volatility_multiplier": e["typical_vol_multiplier"],
+                    "stop_guidance": "Widen stops by 50% or reduce size equivalent",
+                }
+            )
         elif e["impact"] == "Medium":
-            event_guidance.append({
-                "event": e["name"],
-                "hours_until": e["hours_until"],
-                "action": f"Consider tightening stops ahead of {e['name']}",
-                "volatility_multiplier": e["typical_vol_multiplier"],
-                "stop_guidance": "Widen stops by 25% or reduce size slightly",
-            })
+            event_guidance.append(
+                {
+                    "event": e["name"],
+                    "hours_until": e["hours_until"],
+                    "action": f"Consider tightening stops ahead of {e['name']}",
+                    "volatility_multiplier": e["typical_vol_multiplier"],
+                    "stop_guidance": "Widen stops by 25% or reduce size slightly",
+                }
+            )
 
     return {
         "coin": coin,
@@ -1663,9 +1729,7 @@ def apply_archetype_overlay(
     hazard = stack.get("hazard") or 50
     shift_risk = stack.get("shift_risk") or 50
     survival = stack.get("survival") or 50
-    exec_label = (
-        stack["execution"]["label"] if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
 
     adjusted_exposure = round(
         min(95, max(5, base_exposure * config["exposure_mult"])), 1
@@ -1682,8 +1746,7 @@ def apply_archetype_overlay(
         alert_hazard_threshold = 60
 
     should_alert = (
-        shift_risk >= alert_shift_risk_threshold
-        or hazard >= alert_hazard_threshold
+        shift_risk >= alert_shift_risk_threshold or hazard >= alert_hazard_threshold
     )
     pb = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
 
@@ -1692,46 +1755,32 @@ def apply_archetype_overlay(
 
     if archetype == "leverage":
         if hazard > 50:
-            archetype_actions.append(
-                "? Reduce leverage immediately - hazard elevated"
-            )
+            archetype_actions.append("? Reduce leverage immediately - hazard elevated")
         if regime_num <= 0:
             archetype_actions.append("No leveraged longs in this regime")
         if shift_risk > 60:
-            archetype_actions.append(
-                "Close leveraged positions - shift risk too high"
-            )
+            archetype_actions.append("Close leveraged positions - shift risk too high")
     elif archetype == "spot_allocator":
         if regime_num > 0 and hazard < 40:
             archetype_actions.append("Good conditions for DCA allocation")
         elif regime_num < 0:
-            archetype_actions.append(
-                "Pause DCA - accumulate cash for better entry"
-            )
+            archetype_actions.append("Pause DCA - accumulate cash for better entry")
         else:
-            archetype_actions.append(
-                "Reduce DCA amount - neutral conditions"
-            )
+            archetype_actions.append("Reduce DCA amount - neutral conditions")
     elif archetype == "tactical":
         if shift_risk > 55:
             archetype_actions.append("Actively de-risk - shift risk rising")
         if hazard > 55:
             archetype_actions.append("Tighten all stops by 25%")
         if regime_num > 0 and hazard < 35:
-            archetype_actions.append(
-                "Tactical add on pullback - conditions favorable"
-            )
+            archetype_actions.append("Tactical add on pullback - conditions favorable")
     elif archetype == "position":
         if regime_num > 0 and survival > 70:
             archetype_actions.append("Hold - regime persistence strong")
         elif hazard > 60:
-            archetype_actions.append(
-                "Begin scaling out - hazard approaching critical"
-            )
+            archetype_actions.append("Begin scaling out - hazard approaching critical")
         else:
-            archetype_actions.append(
-                "Monitor daily regime - no change needed"
-            )
+            archetype_actions.append("Monitor daily regime - no change needed")
     else:
         archetype_actions.extend(pb["actions"][:3])
 
@@ -1770,9 +1819,7 @@ def apply_archetype_overlay(
 def compute_behavioral_alpha_report(
     email: str, db: Session, lookback_days: int = 30
 ) -> dict:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(
-        days=lookback_days
-    )
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=lookback_days)
 
     logs = (
         db.query(ExposureLog)
@@ -1803,8 +1850,7 @@ def compute_behavioral_alpha_report(
         }
 
     leaks = {
-        lt: {"count": 0, "instances": [], "estimated_drag": 0}
-        for lt in LEAK_TYPES
+        lt: {"count": 0, "instances": [], "estimated_drag": 0} for lt in LEAK_TYPES
     }
 
     log_times = [l.created_at for l in logs]
@@ -1813,18 +1859,17 @@ def compute_behavioral_alpha_report(
         gap = (log_times[i] - log_times[i - 1]).total_seconds() / 3600
         log_gaps_hours.append(gap)
 
-    avg_log_gap = (
-        sum(log_gaps_hours) / len(log_gaps_hours)
-        if log_gaps_hours else 24
-    )
+    avg_log_gap = sum(log_gaps_hours) / len(log_gaps_hours) if log_gaps_hours else 24
 
     if avg_log_gap < 4 and len(logs) > 10:
         leaks["overtrading"]["count"] = len(logs)
         leaks["overtrading"]["estimated_drag"] = round(len(logs) * 0.15, 1)
-        leaks["overtrading"]["instances"].append({
-            "detail": f"Avg {round(avg_log_gap, 1)}h between changes. {len(logs)} adjustments in {lookback_days}d.",
-            "period": f"Last {lookback_days} days",
-        })
+        leaks["overtrading"]["instances"].append(
+            {
+                "detail": f"Avg {round(avg_log_gap, 1)}h between changes. {len(logs)} adjustments in {lookback_days}d.",
+                "period": f"Last {lookback_days} days",
+            }
+        )
 
     for log in logs:
         user_exp = log.user_exposure_pct or 0
@@ -1837,79 +1882,99 @@ def compute_behavioral_alpha_report(
         if delta > 15 and hazard > 50:
             leaks["late_entry_chasing"]["count"] += 1
             leaks["late_entry_chasing"]["estimated_drag"] += round(delta * 0.08, 2)
-            leaks["late_entry_chasing"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "delta": round(delta, 1),
-                "hazard": hazard,
-                "regime": regime,
-            })
+            leaks["late_entry_chasing"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "delta": round(delta, 1),
+                    "hazard": hazard,
+                    "regime": regime,
+                }
+            )
 
         if "Risk-Off" in regime and user_exp > model_exp + 15:
             leaks["overexposed_risk_off"]["count"] += 1
             leaks["overexposed_risk_off"]["estimated_drag"] += round(delta * 0.12, 2)
-            leaks["overexposed_risk_off"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "user_exp": user_exp,
-                "model_exp": model_exp,
-                "regime": regime,
-            })
+            leaks["overexposed_risk_off"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "user_exp": user_exp,
+                    "model_exp": model_exp,
+                    "regime": regime,
+                }
+            )
 
         if hazard > 65 and delta > 10:
             leaks["ignored_hazard_spike"]["count"] += 1
             leaks["ignored_hazard_spike"]["estimated_drag"] += round(hazard * 0.05, 2)
-            leaks["ignored_hazard_spike"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "hazard": hazard,
-                "delta": round(delta, 1),
-            })
+            leaks["ignored_hazard_spike"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "hazard": hazard,
+                    "delta": round(delta, 1),
+                }
+            )
 
         if "Risk-On" in regime and "Strong" in regime and delta < -15 and hazard < 40:
             leaks["premature_exit_strength"]["count"] += 1
-            leaks["premature_exit_strength"]["estimated_drag"] += round(abs(delta) * 0.06, 2)
-            leaks["premature_exit_strength"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "delta": round(delta, 1),
-                "regime": regime,
-            })
+            leaks["premature_exit_strength"]["estimated_drag"] += round(
+                abs(delta) * 0.06, 2
+            )
+            leaks["premature_exit_strength"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "delta": round(delta, 1),
+                    "regime": regime,
+                }
+            )
 
         if "Risk-Off" in regime and delta > 20:
             prev_logs = [
-                pl for pl in logs
+                pl
+                for pl in logs
                 if pl.created_at < log.created_at
                 and (log.created_at - pl.created_at).total_seconds() < 86400
             ]
             if prev_logs:
                 prev_delta = (
-                    prev_logs[-1].user_exposure_pct
-                    - prev_logs[-1].model_exposure_pct
+                    prev_logs[-1].user_exposure_pct - prev_logs[-1].model_exposure_pct
                 )
                 if delta > prev_delta + 5:
                     leaks["averaging_down_risk_off"]["count"] += 1
-                    leaks["averaging_down_risk_off"]["estimated_drag"] += round(delta * 0.15, 2)
-                    leaks["averaging_down_risk_off"]["instances"].append({
-                        "date": log.created_at.strftime("%b %d"),
-                        "delta": round(delta, 1),
-                        "regime": regime,
-                    })
+                    leaks["averaging_down_risk_off"]["estimated_drag"] += round(
+                        delta * 0.15, 2
+                    )
+                    leaks["averaging_down_risk_off"]["instances"].append(
+                        {
+                            "date": log.created_at.strftime("%b %d"),
+                            "delta": round(delta, 1),
+                            "regime": regime,
+                        }
+                    )
 
         if abs(delta) > 25:
             leaks["size_too_large"]["count"] += 1
             leaks["size_too_large"]["estimated_drag"] += round(abs(delta) * 0.04, 2)
-            leaks["size_too_large"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "delta": round(delta, 1),
-                "regime": regime,
-            })
+            leaks["size_too_large"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "delta": round(delta, 1),
+                    "regime": regime,
+                }
+            )
 
         if "Strong Risk-On" in regime and delta < -10 and hazard < 30:
             leaks["failed_to_press_edge"]["count"] += 1
-            leaks["failed_to_press_edge"]["estimated_drag"] += round(abs(delta) * 0.05, 2)
-            leaks["failed_to_press_edge"]["instances"].append({
-                "date": log.created_at.strftime("%b %d"),
-                "delta": round(delta, 1),
-                "regime": regime,
-                "hazard": hazard,
-            })
+            leaks["failed_to_press_edge"]["estimated_drag"] += round(
+                abs(delta) * 0.05, 2
+            )
+            leaks["failed_to_press_edge"]["instances"].append(
+                {
+                    "date": log.created_at.strftime("%b %d"),
+                    "delta": round(delta, 1),
+                    "regime": regime,
+                    "hazard": hazard,
+                }
+            )
 
     active_leaks = []
     total_drag = 0
@@ -1917,36 +1982,30 @@ def compute_behavioral_alpha_report(
     for leak_type, data in leaks.items():
         if data["count"] > 0:
             config = LEAK_TYPES[leak_type]
-            weighted_drag = round(
-                data["estimated_drag"] * config["severity_weight"], 1
-            )
+            weighted_drag = round(data["estimated_drag"] * config["severity_weight"], 1)
             total_drag += weighted_drag
-            active_leaks.append({
-                "type": leak_type,
-                "label": config["label"],
-                "description": config["description"],
-                "frequency": data["count"],
-                "estimated_alpha_drag_pct": weighted_drag,
-                "severity_weight": config["severity_weight"],
-                "instances": data["instances"][:5],
-            })
+            active_leaks.append(
+                {
+                    "type": leak_type,
+                    "label": config["label"],
+                    "description": config["description"],
+                    "frequency": data["count"],
+                    "estimated_alpha_drag_pct": weighted_drag,
+                    "severity_weight": config["severity_weight"],
+                    "instances": data["instances"][:5],
+                }
+            )
 
-    active_leaks.sort(
-        key=lambda x: x["estimated_alpha_drag_pct"], reverse=True
-    )
+    active_leaks.sort(key=lambda x: x["estimated_alpha_drag_pct"], reverse=True)
 
     strengths = []
     followed_count = sum(1 for l in logs if l.followed_model)
     follow_rate = (followed_count / len(logs)) * 100 if logs else 0
 
     if follow_rate > 70:
-        strengths.append(
-            f"Strong model adherence ({round(follow_rate)}% follow rate)"
-        )
+        strengths.append(f"Strong model adherence ({round(follow_rate)}% follow rate)")
 
-    risk_off_logs = [
-        l for l in logs if "Risk-Off" in (l.regime_label or "")
-    ]
+    risk_off_logs = [l for l in logs if "Risk-Off" in (l.regime_label or "")]
     if risk_off_logs:
         risk_off_followed = sum(1 for l in risk_off_logs if l.followed_model)
         risk_off_rate = (risk_off_followed / len(risk_off_logs)) * 100
@@ -1955,12 +2014,11 @@ def compute_behavioral_alpha_report(
                 f"Good defensive discipline ({round(risk_off_rate)}% in Risk-Off)"
             )
 
-    hazard_spike_logs = [
-        l for l in logs if (l.hazard_at_log or 0) > 60
-    ]
+    hazard_spike_logs = [l for l in logs if (l.hazard_at_log or 0) > 60]
     if hazard_spike_logs:
         reduced = sum(
-            1 for l in hazard_spike_logs
+            1
+            for l in hazard_spike_logs
             if (l.user_exposure_pct or 0) < (l.model_exposure_pct or 50)
         )
         if reduced > len(hazard_spike_logs) * 0.5:
@@ -1981,25 +2039,19 @@ def compute_behavioral_alpha_report(
                 "Enable hazard alerts. When hazard > 65, reduce exposure within 1 hour."
             )
         elif leak["type"] == "overtrading":
-            recommendations.append(
-                "Limit exposure changes to once per regime shift."
-            )
+            recommendations.append("Limit exposure changes to once per regime shift.")
         elif leak["type"] == "size_too_large":
             recommendations.append(
                 "Use the Portfolio Allocator to right-size positions."
             )
         elif leak["type"] == "averaging_down_risk_off":
-            recommendations.append(
-                "Never add to positions in Risk-Off."
-            )
+            recommendations.append("Never add to positions in Risk-Off.")
         elif leak["type"] == "failed_to_press_edge":
             recommendations.append(
                 "In Strong Risk-On with low hazard, trust the model."
             )
         elif leak["type"] == "premature_exit_strength":
-            recommendations.append(
-                "In strong regimes with low hazard, hold longer."
-            )
+            recommendations.append("In strong regimes with low hazard, hold longer.")
 
     if total_drag <= 2:
         behavior_grade, behavior_label = "A", "Excellent"
@@ -2043,9 +2095,7 @@ def compute_discipline_score(logs: list) -> dict:
 
     total_logs = len(logs)
     followed = sum(1 for l in logs if l.followed_model)
-    base_score = (
-        round((followed / total_logs) * 100, 1) if total_logs > 0 else 50
-    )
+    base_score = round((followed / total_logs) * 100, 1) if total_logs > 0 else 50
     flags = []
     penalties = 0
     bonuses = 0
@@ -2058,39 +2108,47 @@ def compute_discipline_score(logs: list) -> dict:
         delta = user_exp - model_exp
 
         if hazard > 65 and delta > 10:
-            flags.append({
-                "type": "penalty",
-                "label": "Added leverage in elevated hazard",
-                "date": log.created_at.strftime("%b %d"),
-                "regime": log.regime_label,
-            })
+            flags.append(
+                {
+                    "type": "penalty",
+                    "label": "Added leverage in elevated hazard",
+                    "date": log.created_at.strftime("%b %d"),
+                    "regime": log.regime_label,
+                }
+            )
             penalties += 10
 
         if "Risk-Off" in (log.regime_label or "") and user_exp > model_exp + 15:
-            flags.append({
-                "type": "penalty",
-                "label": "Over-exposed in Risk-Off regime",
-                "date": log.created_at.strftime("%b %d"),
-                "regime": log.regime_label,
-            })
+            flags.append(
+                {
+                    "type": "penalty",
+                    "label": "Over-exposed in Risk-Off regime",
+                    "date": log.created_at.strftime("%b %d"),
+                    "regime": log.regime_label,
+                }
+            )
             penalties += 15
 
         if shift_risk > 70 and delta < -5:
-            flags.append({
-                "type": "bonus",
-                "label": "Reduced exposure on hazard spike",
-                "date": log.created_at.strftime("%b %d"),
-                "regime": log.regime_label,
-            })
+            flags.append(
+                {
+                    "type": "bonus",
+                    "label": "Reduced exposure on hazard spike",
+                    "date": log.created_at.strftime("%b %d"),
+                    "regime": log.regime_label,
+                }
+            )
             bonuses += 10
 
         if "Strong Risk-On" in (log.regime_label or "") and abs(delta) < 10:
-            flags.append({
-                "type": "bonus",
-                "label": "Stayed within band in strong regime",
-                "date": log.created_at.strftime("%b %d"),
-                "regime": log.regime_label,
-            })
+            flags.append(
+                {
+                    "type": "bonus",
+                    "label": "Stayed within band in strong regime",
+                    "date": log.created_at.strftime("%b %d"),
+                    "regime": log.regime_label,
+                }
+            )
             bonuses += 5
 
     final_score = round(min(100, max(0, base_score + bonuses - penalties)), 1)
@@ -2131,13 +2189,9 @@ def compute_performance_comparison(entries: list) -> dict:
             "message": "Need at least 3 entries for comparison.",
         }
 
-    user_returns = [
-        e.user_return_pct for e in entries
-        if e.user_return_pct is not None
-    ]
+    user_returns = [e.user_return_pct for e in entries if e.user_return_pct is not None]
     model_returns = [
-        e.model_return_pct for e in entries
-        if e.model_return_pct is not None
+        e.model_return_pct for e in entries if e.model_return_pct is not None
     ]
 
     if not user_returns or not model_returns:
@@ -2150,7 +2204,7 @@ def compute_performance_comparison(entries: list) -> dict:
     def compound(returns):
         result = 1.0
         for r in returns:
-            result *= (1 + r / 100)
+            result *= 1 + r / 100
         return round((result - 1) * 100, 2)
 
     user_total = compound(user_returns)
@@ -2191,15 +2245,17 @@ def compute_performance_comparison(entries: list) -> dict:
     user_cum = 1.0
     model_cum = 1.0
     for i, e in enumerate(entries):
-        user_cum *= (1 + (e.user_return_pct or 0) / 100)
-        model_cum *= (1 + (e.model_return_pct or 0) / 100)
-        curve.append({
-            "period": i + 1,
-            "user_cum": round((user_cum - 1) * 100, 2),
-            "model_cum": round((model_cum - 1) * 100, 2),
-            "date": e.date.strftime("%b %d") if e.date else "",
-            "regime": e.regime_label or "-",
-        })
+        user_cum *= 1 + (e.user_return_pct or 0) / 100
+        model_cum *= 1 + (e.model_return_pct or 0) / 100
+        curve.append(
+            {
+                "period": i + 1,
+                "user_cum": round((user_cum - 1) * 100, 2),
+                "model_cum": round((model_cum - 1) * 100, 2),
+                "date": e.date.strftime("%b %d") if e.date else "",
+                "regime": e.regime_label or "-",
+            }
+        )
 
     return {
         "user_total_return": user_total,
@@ -2220,9 +2276,7 @@ def compute_performance_comparison(entries: list) -> dict:
 # -----------------------------------------
 # MISTAKE REPLAY
 # -----------------------------------------
-def compute_mistake_replay(
-    logs: list, db: Session, coin: str
-) -> list:
+def compute_mistake_replay(logs: list, db: Session, coin: str) -> list:
     replays = []
     for log in logs:
         hazard = log.hazard_at_log or 0
@@ -2236,30 +2290,31 @@ def compute_mistake_replay(
             severity = (
                 "high"
                 if (hazard > 70 or shift_risk > 75) and abs(delta) > 20
-                else "medium" if abs(delta) > 15
-                else "low"
+                else "medium" if abs(delta) > 15 else "low"
             )
             direction = "over-exposed" if delta > 0 else "under-exposed"
-            replays.append({
-                "date": log.created_at.strftime("%b %d, %Y"),
-                "regime": regime,
-                "hazard": hazard,
-                "shift_risk": shift_risk,
-                "user_exp": user_exp,
-                "model_exp": model_exp,
-                "delta": round(delta, 1),
-                "direction": direction,
-                "severity": severity,
-                "message": (
-                    f"You were {direction} by {abs(round(delta, 1))}% "
-                    f"while hazard was {hazard}% in {regime} regime."
-                ),
-                "signals_at_time": {
+            replays.append(
+                {
+                    "date": log.created_at.strftime("%b %d, %Y"),
+                    "regime": regime,
                     "hazard": hazard,
                     "shift_risk": shift_risk,
-                    "alignment": log.alignment_at_log or 0,
-                },
-            })
+                    "user_exp": user_exp,
+                    "model_exp": model_exp,
+                    "delta": round(delta, 1),
+                    "direction": direction,
+                    "severity": severity,
+                    "message": (
+                        f"You were {direction} by {abs(round(delta, 1))}% "
+                        f"while hazard was {hazard}% in {regime} regime."
+                    ),
+                    "signals_at_time": {
+                        "hazard": hazard,
+                        "shift_risk": shift_risk,
+                        "alignment": log.alignment_at_log or 0,
+                    },
+                }
+            )
 
     return sorted(
         replays,
@@ -2283,18 +2338,12 @@ def compute_if_nothing_panel(
     delta_abs = abs(round(delta, 1))
 
     base_dd_prob = round((hazard * 0.5 + shift_risk * 0.5), 1)
-    exposure_multiplier = (
-        1 + (delta / 100) * 0.8 if over_exposed else 1.0
-    )
+    exposure_multiplier = 1 + (delta / 100) * 0.8 if over_exposed else 1.0
     adj_dd_prob = round(min(95, base_dd_prob * exposure_multiplier), 1)
     dd_prob_increase = round(adj_dd_prob - base_dd_prob, 1)
     dd_magnitude = round((hazard / 100) * 0.25 * 100, 1)
-    expected_loss_pct = round(
-        (user_exposure / 100) * (dd_magnitude / 100) * 100, 1
-    )
-    model_loss_pct = round(
-        (model_exposure / 100) * (dd_magnitude / 100) * 100, 1
-    )
+    expected_loss_pct = round((user_exposure / 100) * (dd_magnitude / 100) * 100, 1)
+    model_loss_pct = round((model_exposure / 100) * (dd_magnitude / 100) * 100, 1)
 
     if over_exposed and delta_abs > 15:
         severity = "high"
@@ -2334,12 +2383,8 @@ def compute_if_nothing_panel(
 # -----------------------------------------
 # WHAT CHANGED
 # -----------------------------------------
-def compute_what_changed(
-    db: Session, lookback_hours: int = 24
-) -> dict:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(
-        hours=lookback_hours
-    )
+def compute_what_changed(db: Session, lookback_hours: int = 24) -> dict:
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=lookback_hours)
 
     changes = []
     current_states = {}
@@ -2350,9 +2395,17 @@ def compute_what_changed(
             continue
 
         current_states[coin] = {
-            "macro": current_stack["macro"]["label"] if current_stack.get("macro") else None,
-            "trend": current_stack["trend"]["label"] if current_stack.get("trend") else None,
-            "execution": current_stack["execution"]["label"] if current_stack.get("execution") else None,
+            "macro": (
+                current_stack["macro"]["label"] if current_stack.get("macro") else None
+            ),
+            "trend": (
+                current_stack["trend"]["label"] if current_stack.get("trend") else None
+            ),
+            "execution": (
+                current_stack["execution"]["label"]
+                if current_stack.get("execution")
+                else None
+            ),
             "exposure": current_stack.get("exposure"),
             "shift_risk": current_stack.get("shift_risk"),
             "hazard": current_stack.get("hazard"),
@@ -2391,31 +2444,35 @@ def compute_what_changed(
                 severity = "positive" if curr_num > prev_num else "negative"
                 tf_label = settings.TIMEFRAME_LABELS.get(tf, tf)
 
-                changes.append({
-                    "coin": coin,
-                    "timeframe": tf,
-                    "timeframe_label": tf_label,
-                    "previous": prev_record.label,
-                    "current": current_record.label,
-                    "direction": direction,
-                    "severity": severity,
-                    "score_change": round(
-                        current_record.score - prev_record.score, 2
-                    ),
-                    "message": (
-                        f"{coin} {tf_label} regime {direction}: "
-                        f"{prev_record.label} ? {current_record.label}"
-                    ),
-                })
+                changes.append(
+                    {
+                        "coin": coin,
+                        "timeframe": tf,
+                        "timeframe_label": tf_label,
+                        "previous": prev_record.label,
+                        "current": current_record.label,
+                        "direction": direction,
+                        "severity": severity,
+                        "score_change": round(
+                            current_record.score - prev_record.score, 2
+                        ),
+                        "message": (
+                            f"{coin} {tf_label} regime {direction}: "
+                            f"{prev_record.label} ? {current_record.label}"
+                        ),
+                    }
+                )
 
     exposure_changes = []
     for coin, state in current_states.items():
         if state["shift_risk"] and state["shift_risk"] > 65:
-            exposure_changes.append({
-                "coin": coin,
-                "type": "risk_warning",
-                "message": f"{coin} shift risk at {state['shift_risk']}% - elevated",
-            })
+            exposure_changes.append(
+                {
+                    "coin": coin,
+                    "type": "risk_warning",
+                    "message": f"{coin} shift risk at {state['shift_risk']}% - elevated",
+                }
+            )
 
     breadth = compute_market_breadth(db)
     upgrade_count = sum(1 for c in changes if c["direction"] == "upgraded")
@@ -2435,9 +2492,7 @@ def compute_what_changed(
         tone = "mixed"
 
     takeaways = []
-    high_impact_changes = [
-        c for c in changes if c["timeframe"] in ("1d", "4h")
-    ]
+    high_impact_changes = [c for c in changes if c["timeframe"] in ("1d", "4h")]
     if high_impact_changes:
         for c in high_impact_changes[:3]:
             takeaways.append(c["message"])
@@ -2463,6 +2518,7 @@ def compute_what_changed(
         "current_states": current_states,
         "timestamp": datetime.datetime.utcnow().isoformat(),
     }
+
 
 # Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 # INTELLIGENCE BRIEF CACHE ENGINE
@@ -2523,9 +2579,7 @@ def get_intelligence_brief(
     if not brief:
         return None
 
-    age_minutes = (
-        datetime.datetime.utcnow() - brief.created_at
-    ).total_seconds() / 60
+    age_minutes = (datetime.datetime.utcnow() - brief.created_at).total_seconds() / 60
 
     if age_minutes > max_age_minutes:
         return None
@@ -2559,4 +2613,3 @@ def get_or_compute_brief(
             pass
 
     return result
-

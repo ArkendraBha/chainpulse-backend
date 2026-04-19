@@ -45,10 +45,7 @@ async def log_exposure(
     hazard = stack.get("hazard") or 0
     shift_risk = stack.get("shift_risk") or 0
     alignment = stack.get("alignment") or 0
-    exec_label = (
-        stack["execution"]["label"]
-        if stack.get("execution") else "Neutral"
-    )
+    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
     delta = body.user_exposure_pct - model_exp
     followed = abs(delta) <= 10
 
@@ -170,9 +167,7 @@ async def log_performance(
         else "Neutral"
     )
 
-    price_return = (
-        (body.price_close - body.price_open) / body.price_open
-    ) * 100
+    price_return = ((body.price_close - body.price_open) / body.price_open) * 100
     user_return = round(price_return * (body.user_exposure_pct / 100), 2)
     model_return = round(price_return * (model_exp / 100), 2)
 
@@ -286,22 +281,17 @@ def edge_profile_endpoint(
                 "win_rate": round((wins / len(rets)) * 100, 1),
                 "count": len(rets),
                 "performance": (
-                    "Strong" if avg > 2
-                    else "Good" if avg > 0.5
-                    else "Weak" if avg > -1
-                    else "Poor"
+                    "Strong"
+                    if avg > 2
+                    else "Good" if avg > 0.5 else "Weak" if avg > -1 else "Poor"
                 ),
             }
 
     if not profile:
         return {"email": email, "ready": False, "message": "No return data."}
 
-    best_regime = max(
-        profile.items(), key=lambda x: x[1]["avg_return"]
-    )
-    worst_regime = min(
-        profile.items(), key=lambda x: x[1]["avg_return"]
-    )
+    best_regime = max(profile.items(), key=lambda x: x[1]["avg_return"])
+    worst_regime = min(profile.items(), key=lambda x: x[1]["avg_return"])
 
     recommendations = []
     for regime, data in profile.items():
@@ -353,11 +343,7 @@ def full_accountability(
         .limit(30)
         .all()
     )
-    user_profile = (
-        db.query(UserProfile)
-        .filter(UserProfile.email == email)
-        .first()
-    )
+    user_profile = db.query(UserProfile).filter(UserProfile.email == email).first()
 
     discipline = compute_discipline_score(logs)
     performance = compute_performance_comparison(entries)
@@ -375,12 +361,11 @@ def full_accountability(
         edge = {
             regime: {
                 "avg_return": round(sum(r) / len(r), 2),
-                "win_rate": round(
-                    sum(1 for x in r if x > 0) / len(r) * 100, 1
-                ),
+                "win_rate": round(sum(1 for x in r if x > 0) / len(r) * 100, 1),
                 "count": len(r),
             }
-            for regime, r in regime_data.items() if r
+            for regime, r in regime_data.items()
+            if r
         }
 
     return {
@@ -390,12 +375,22 @@ def full_accountability(
         "performance": performance,
         "replays": replays,
         "edge": edge,
-        "profile": {
-            "risk_identity": user_profile.risk_identity if user_profile else None,
-            "risk_multiplier": user_profile.risk_multiplier if user_profile else None,
-            "max_drawdown_pct": user_profile.max_drawdown_pct if user_profile else None,
-            "holding_period_days": user_profile.holding_period_days if user_profile else None,
-        } if user_profile else None,
+        "profile": (
+            {
+                "risk_identity": user_profile.risk_identity if user_profile else None,
+                "risk_multiplier": (
+                    user_profile.risk_multiplier if user_profile else None
+                ),
+                "max_drawdown_pct": (
+                    user_profile.max_drawdown_pct if user_profile else None
+                ),
+                "holding_period_days": (
+                    user_profile.holding_period_days if user_profile else None
+                ),
+            }
+            if user_profile
+            else None
+        ),
         "has_profile": user_profile is not None,
     }
 
@@ -415,7 +410,6 @@ def behavioral_alpha_endpoint(
     update_last_active(request, db)
     lookback_days = min(max(7, lookback_days), 90)
     return compute_behavioral_alpha_report(email, db, lookback_days)
-
 
 
 @router.get("/export/exposure-log")
@@ -440,24 +434,35 @@ def export_exposure_log(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "date", "coin", "user_exposure_pct", "model_exposure_pct",
-        "delta", "regime", "hazard", "shift_risk", "followed_model",
-        "price_at_log",
-    ])
+    writer.writerow(
+        [
+            "date",
+            "coin",
+            "user_exposure_pct",
+            "model_exposure_pct",
+            "delta",
+            "regime",
+            "hazard",
+            "shift_risk",
+            "followed_model",
+            "price_at_log",
+        ]
+    )
     for log in logs:
-        writer.writerow([
-            log.created_at.strftime("%Y-%m-%d %H:%M"),
-            log.coin,
-            log.user_exposure_pct,
-            log.model_exposure_pct,
-            round((log.user_exposure_pct or 0) - (log.model_exposure_pct or 0), 1),
-            log.regime_label,
-            log.hazard_at_log,
-            log.shift_risk_at_log,
-            log.followed_model,
-            log.price_at_log,
-        ])
+        writer.writerow(
+            [
+                log.created_at.strftime("%Y-%m-%d %H:%M"),
+                log.coin,
+                log.user_exposure_pct,
+                log.model_exposure_pct,
+                round((log.user_exposure_pct or 0) - (log.model_exposure_pct or 0), 1),
+                log.regime_label,
+                log.hazard_at_log,
+                log.shift_risk_at_log,
+                log.followed_model,
+                log.price_at_log,
+            ]
+        )
 
     output.seek(0)
     return StreamingResponse(
@@ -494,24 +499,35 @@ def export_performance(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "date", "coin", "user_exposure_pct", "model_exposure_pct",
-        "price_open", "price_close", "user_return_pct",
-        "model_return_pct", "alpha", "regime",
-    ])
+    writer.writerow(
+        [
+            "date",
+            "coin",
+            "user_exposure_pct",
+            "model_exposure_pct",
+            "price_open",
+            "price_close",
+            "user_return_pct",
+            "model_return_pct",
+            "alpha",
+            "regime",
+        ]
+    )
     for e in entries:
-        writer.writerow([
-            e.date.strftime("%Y-%m-%d") if e.date else "",
-            e.coin,
-            e.user_exposure_pct,
-            e.model_exposure_pct,
-            e.price_open,
-            e.price_close,
-            e.user_return_pct,
-            e.model_return_pct,
-            round((e.user_return_pct or 0) - (e.model_return_pct or 0), 2),
-            e.regime_label,
-        ])
+        writer.writerow(
+            [
+                e.date.strftime("%Y-%m-%d") if e.date else "",
+                e.coin,
+                e.user_exposure_pct,
+                e.model_exposure_pct,
+                e.price_open,
+                e.price_close,
+                e.user_return_pct,
+                e.model_return_pct,
+                round((e.user_return_pct or 0) - (e.model_return_pct or 0), 2),
+                e.regime_label,
+            ]
+        )
 
     output.seek(0)
     return StreamingResponse(

@@ -39,5 +39,3 @@ async def trade_plan_endpoint(
         db=db,
         email=email,
     )
-
-
