@@ -120,7 +120,7 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
   <div style="font-size:11px;color:#555;text-transform:uppercase;
        letter-spacing:2px;margin-bottom:16px;">ChainPulse Alert</div>
   <h2 style="color:#f87171;margin-bottom:16px;">
-    ? Regime Shift Risk Elevated - {coin}
+    Regime Shift Risk Elevated - {coin}
   </h2>
   <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
     <tr>
@@ -141,11 +141,20 @@ def regime_alert_html(coin: str, stack: dict, quality: dict = None) -> str:
     </tr>
     {quality_row}
   </table>
-  <p style="color:#999;margin-bottom:24px;">
-    Shift Risk: <strong style="color:#f87171;">{shift_risk}%</strong>
-    &nbsp;ï¿½&nbsp; Recommended Exposure: <strong style="color:#fff;">{exposure}%</strong>
-    &nbsp;ï¿½&nbsp; Strategy: <strong style="color:#fff;">{pb['strategy_mode']}</strong>
-  </p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+    <tr>
+      <td style="padding:8px 0;border-bottom:1px solid #1f1f1f;color:#555;font-size:12px;">Shift Risk</td>
+      <td style="padding:8px 0;border-bottom:1px solid #1f1f1f;color:#f87171;text-align:right;font-weight:bold;">{shift_risk}%</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 0;border-bottom:1px solid #1f1f1f;color:#555;font-size:12px;">Recommended Exposure</td>
+      <td style="padding:8px 0;border-bottom:1px solid #1f1f1f;color:#fff;text-align:right;font-weight:bold;">{exposure}%</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 0;color:#555;font-size:12px;">Strategy</td>
+      <td style="padding:8px 0;color:#fff;text-align:right;font-weight:bold;">{pb['strategy_mode']}</td>
+    </tr>
+  </table>
   <div style="border:1px solid #1f1f1f;padding:16px;margin-bottom:24px;">
     <div style="font-size:11px;color:#555;text-transform:uppercase;
          letter-spacing:1px;margin-bottom:10px;">
