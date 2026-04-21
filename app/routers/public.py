@@ -928,3 +928,30 @@ async def create_checkout_session(
 
         logging.getLogger("chainpulse").error(f"Checkout error: {e}")
         raise HTTPException(500, detail="Checkout creation failed")
+
+@router.post("/request-login")
+async def request_login(request: Request, db: Session = Depends(get_db)):
+    from app.utils.schemas import RestoreRequest
+    from app.auth.login import send_login_email
+    
+    rate_limiter.require(request, max_requests=5, window_seconds=3600)
+    
+    try:
+        body_bytes = await request.json()
+        body = RestoreRequest.model_validate(body_bytes)
+    except Exception:
+        raise HTTPException(400, detail="Invalid request body")
+
+    email = body.email.strip().lower()
+    
+    try:
+        success = send_login_email(email, db)
+        if success:
+            return {"status": "sent", "message": "Login link sent"}
+        else:
+            raise HTTPException(500, detail="Email send failed")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login request failed: {e}")
+        raise HTTPException(500, detail="Login failed")
