@@ -352,12 +352,16 @@ def list_archetypes():
 
 @router.get("/user-status")
 def user_status(request: Request, db: Session = Depends(get_db)):
+    from app.auth.auth import resolve_user_tier
     user_info = resolve_user_tier(get_auth_header(request), db)
+    user = user_info.get("user")
     return {
         "is_pro": user_info["is_pro"],
         "tier": user_info["tier"],
+        "email": user.email if user else None,
         "timestamp": datetime.datetime.utcnow(),
     }
+
 
 
 @router.get("/pricing")
