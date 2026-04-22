@@ -934,28 +934,47 @@ async def create_checkout_session(
         raise HTTPException(500, detail="Checkout creation failed")
 
 @router.post("/request-login")
-async def request_login(request: Request, db: Session = Depends(get_db)):
-    from app.utils.schemas import RestoreRequest
-    from app.auth.login import send_login_email
-    
-    rate_limiter.require(request, max_requests=5, window_seconds=3600)
-    
+async def request_login(request: Request, db: Session = Depends(getdb)):
     try:
-        body_bytes = await request.json()
-        body = RestoreRequest.model_validate(body_bytes)
-    except Exception:
-        raise HTTPException(400, detail="Invalid request body")
-
-    email = body.email.strip().lower()
-    
-    try:
-        success = send_login_email(email, db)
-        if success:
-            return {"status": "sent", "message": "Login link sent"}
-        else:
-            raise HTTPException(500, detail="Email send failed")
+        body = await request.json()
+        email = body.get("email", "").strip().lower()
+        if not email:
+            raise HTTPException(400, detail="Email required")
+        
+        # Find user
+        user = db.query(User).filter(User.email == email).first()
+        if not user or user.subscription_status != "active":
+            # Return success anyway to prevent email enumeration
+            return {"status": "sent", "message": "If this email exists, a login link has been sent"}
+        
+        # Generate token
+        import secrets, hashlib, datetime
+        raw = secrets.token_urlsafe(32)
+        hashed = hashlib.sha256(raw.encode()).hexdigest()
+        user.access_token = hashed
+        user.token_created_at = datetime.datetime.utcnow()
+        db.commit()
+        
+        # Send email
+        from app.services.emails import sendemail
+        login_url = f"{settings.FRONTEND_URL}/app?token={raw}"
+        html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#000;color:#fff;padding:40px;">
+  <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">ChainPulse</div>
+  <h1 style="font-size:24px;margin-bottom:16px;">Your Login Link</h1>
+  <p style="color:#999;font-size:14px;margin-bottom:32px;">Click below to access your dashboard. This link expires in 90 days.</p>
+  <a href="{login_url}" style="display:inline-block;background:#10b981;color:#fff;padding:16px 32px;text-decoration:none;font-weight:bold;border-radius:12px;">
+    Access Dashboard
+  </a>
+  <p style="color:#333;font-size:11px;margin-top:40px;border-top:1px solid #111;padding-top:20px;">ChainPulse. Not financial advice.</p>
+</div>
+"""
+        sendemail(email, "ChainPulse — Your Login Link", html)
+        return {"status": "sent", "message": "Login link sent"}
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Login request failed: {e}")
-        raise HTTPException(500, detail="Login failed")
+        logger.error(f"request-login failed: {e}")
+        raise HTTPException(500, detail=str(e))
+
