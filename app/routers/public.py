@@ -934,7 +934,7 @@ async def create_checkout_session(
         raise HTTPException(500, detail="Checkout creation failed")
 
 @router.post("/request-login")
-async def request_login(request: Request, db: Session = Depends(getdb)):
+async def request_login(request: Request, db: Session = Depends(get_db)):
     try:
         body = await request.json()
         email = body.get("email", "").strip().lower()
