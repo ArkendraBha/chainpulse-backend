@@ -47,8 +47,8 @@ async def get_klines(symbol: str, interval: str, limit: int = 120):
         from app.core.circuit_breaker import binance_circuit, binance_us_circuit
 
     circuit_map = {
-        "[api.binance.com](https://api.binance.com/api/v3/klines)": binance_circuit,
-        "[api.binance.us](https://api.binance.us/api/v3/klines)": binance_us_circuit,
+        "https://api.binance.com/api/v3/klines": binance_circuit,
+        "https://api.binance.us/api/v3/klines": binance_us_circuit,
     }
 
     for url in urls:
