@@ -940,22 +940,17 @@ async def request_login(request: Request, db: Session = Depends(get_db)):
         email = body.get("email", "").strip().lower()
         if not email:
             raise HTTPException(400, detail="Email required")
-        
-        # Find user
+
         user = db.query(User).filter(User.email == email).first()
         if not user or user.subscription_status != "active":
-            # Return success anyway to prevent email enumeration
             return {"status": "sent", "message": "If this email exists, a login link has been sent"}
-        
-        # Generate token
+
         import secrets, hashlib, datetime
         raw = secrets.token_urlsafe(32)
-        hashed = hashlib.sha256(raw.encode()).hexdigest()
-        user.access_token = hashed
+        user.access_token = hashlib.sha256(raw.encode()).hexdigest()
         user.token_created_at = datetime.datetime.utcnow()
         db.commit()
-        
-        # Send email
+
         from app.services.emails import sendemail
         login_url = f"{settings.FRONTEND_URL}/app?token={raw}"
         html = f"""
@@ -969,12 +964,13 @@ async def request_login(request: Request, db: Session = Depends(get_db)):
   <p style="color:#333;font-size:11px;margin-top:40px;border-top:1px solid #111;padding-top:20px;">ChainPulse. Not financial advice.</p>
 </div>
 """
-        sendemail(email, "ChainPulse — Your Login Link", html)
+        sendemail(email, "ChainPulse - Your Login Link", html)
         return {"status": "sent", "message": "Login link sent"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"request-login failed: {e}")
         raise HTTPException(500, detail=str(e))
+
 
