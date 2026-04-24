@@ -95,7 +95,7 @@ async def health_check():
     # Binance
     try:
         r = _requests.get(
-            "[api.binance.com](https://api.binance.com/api/v3/ping)",
+            "https://api.binance.com/api/v3/ping",
             timeout=3,
         )
         health["dependencies"]["binance"] = (

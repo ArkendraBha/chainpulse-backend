@@ -4,6 +4,8 @@ import requests
 import os
 import stripe
 import uuid
+import logging
+logger = logging.getLogger("chainpulse")
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
@@ -358,7 +360,9 @@ def user_status(request: Request, db: Session = Depends(get_db)):
     return {
         "is_pro": user_info["is_pro"],
         "tier": user_info["tier"],
+        "expired": user_info.get("expired", False),
         "email": user.email if user else None,
+        "subscription_status": user.subscription_status if user else None,
         "timestamp": datetime.datetime.utcnow(),
     }
 
@@ -672,8 +676,8 @@ async def restore_access(
 
     email = body.email.strip().lower()
     user = db.query(User).filter(User.email == email).first()
-    if not user or user.subscription_status != "active":
-        raise HTTPException(404, detail="No active Pro subscription found")
+    if not user or user.subscription_status not in ("active", "trialing"):
+        raise HTTPException(404, detail="No active subscription found")
 
     # CRITICAL 1: secure token generation
     raw_token = generate_access_token()
@@ -743,7 +747,22 @@ async def stripe_webhook(
         )
         customer_id = data.get("customer")
         subscription_id = data.get("subscription")
-        tier = data.get("metadata", {}).get("tier", "pro")
+        tier = data.get("metadata", {}).get("tier")
+        if not tier and subscription_id:
+            try:
+                sub = stripe.Subscription.retrieve(subscription_id)
+                tier = sub.get("metadata", {}).get("tier")
+                if not tier:
+                    items = sub.get("items", {}).get("data", [])
+                    if items:
+                        price_id = items[0].get("price", {}).get("id", "")
+                        for t, prices in settings.STRIPE_PRICE_MAP.items():
+                            if price_id in (prices.get("monthly"), prices.get("annual")):
+                                tier = t
+                                break
+            except Exception:
+                pass
+        tier = tier or "pro"
 
         if customer_email:
             email = customer_email.strip().lower()
@@ -780,7 +799,19 @@ async def stripe_webhook(
         sub_id = subscription.get("id")
         customer_id = subscription.get("customer")
         status = subscription.get("status")
-        tier = subscription.get("metadata", {}).get("tier", "pro")
+        tier = subscription.get("metadata", {}).get("tier")
+        if not tier:
+            try:
+                items = subscription.get("items", {}).get("data", [])
+                if items:
+                    price_id = items[0].get("price", {}).get("id", "")
+                    for t, prices in settings.STRIPE_PRICE_MAP.items():
+                        if price_id in (prices.get("monthly"), prices.get("annual")):
+                            tier = t
+                            break
+            except Exception:
+                pass
+        tier = tier or "pro"
 
         user = db.query(User).filter(User.stripe_subscription_id == sub_id).first()
         if not user:
@@ -831,6 +862,8 @@ async def stripe_webhook(
         user = db.query(User).filter(User.stripe_customer_id == customer_id).first()
         if user:
             user.subscription_status = "past_due"
+            user.access_token = None
+            user.token_created_at = None
             db.commit()
             send_email(
                 user.email,
@@ -915,7 +948,8 @@ async def create_checkout_session(
             metadata={"tier": body.tier},
             allow_promotion_codes=True,
             success_url=(
-                f"{settings.FRONTEND_URL}/app" f"?success=true&tier={body.tier}"
+                f"{settings.FRONTEND_URL}/app"
+                f"?success=true&tier={body.tier}&email={body.email or ''}"
             ),
             cancel_url=(f"{settings.FRONTEND_URL}/pricing?cancelled=true"),
             **customer_kwargs,
@@ -942,7 +976,7 @@ async def request_login(request: Request, db: Session = Depends(get_db)):
             raise HTTPException(400, detail="Email required")
 
         user = db.query(User).filter(User.email == email).first()
-        if not user or user.subscription_status != "active":
+        if not user or user.subscription_status not in ("active", "trialing"):
             return {"status": "sent", "message": "If this email exists, a login link has been sent"}
 
         import secrets, hashlib, datetime
@@ -951,7 +985,7 @@ async def request_login(request: Request, db: Session = Depends(get_db)):
         user.token_created_at = datetime.datetime.utcnow()
         db.commit()
 
-        from app.services.emails import sendemail
+        from app.services.emails import send_email
         login_url = f"{settings.FRONTEND_URL}/app?token={raw}"
         html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#000;color:#fff;padding:40px;">
@@ -964,7 +998,7 @@ async def request_login(request: Request, db: Session = Depends(get_db)):
   <p style="color:#333;font-size:11px;margin-top:40px;border-top:1px solid #111;padding-top:20px;">ChainPulse. Not financial advice.</p>
 </div>
 """
-        sendemail(email, "ChainPulse - Your Login Link", html)
+        send_email(email, "ChainPulse - Your Login Link", html)
         return {"status": "sent", "message": "Login link sent"}
 
     except HTTPException:

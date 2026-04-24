@@ -759,36 +759,6 @@ def run_backtest(
     }
 
 
-@router.get("/backtest/{coin}")
-def backtest_endpoint(
-    request: Request,
-    coin: str,
-    days: int = 90,
-    strategy: str = "follow_model",
-    db: Session = Depends(get_db),
-):
-    auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="pro")
-
-    if coin not in settings.SUPPORTED_COINS:
-        raise HTTPException(400, detail="Unsupported coin")
-    if strategy not in ["follow_model", "buy_and_hold", "risk_off_only", "momentum"]:
-        raise HTTPException(400, detail="Invalid strategy")
-    if not 7 <= days <= 365:
-        raise HTTPException(400, detail="Days must be 7-365")
-
-    end = datetime.datetime.utcnow()
-    start = end - datetime.timedelta(days=days)
-
-    cache_key = f"backtest:{coin}:{strategy}:{days}"
-    cached = cache_get(cache_key)
-    if cached:
-        return cached
-
-    result = run_backtest(db, coin, start, end, strategy=strategy)
-    cache_set(cache_key, result, ttl=3600)
-    return result
-
 
 @router.get("/ai-narrative")
 async def ai_narrative_endpoint(
@@ -982,57 +952,6 @@ def monte_carlo_var_endpoint(
 
     cache_set(cache_key, result, ttl=300)
     return result
-
-
-@router.get("/kelly-criterion")
-def kelly_criterion_endpoint(
-    request: Request,
-    coin: str = "BTC",
-    win_rate: float = 0.55,
-    avg_win_pct: float = 3.0,
-    avg_loss_pct: float = 2.0,
-    account_size: float = 10000.0,
-    db: Session = Depends(get_db),
-):
-    """
-    Kelly Criterion optimal position sizing
-    adjusted for current regime conditions.
-
-    Parameters:
-      win_rate: your historical win rate (0.0-1.0)
-      avg_win_pct: average winning trade size in %
-      avg_loss_pct: average losing trade size in %
-      account_size: total portfolio in USD
-    """
-    rate_limiter.require(request, max_requests=20, window_seconds=60)
-    if coin not in settings.SUPPORTED_COINS:
-        raise HTTPException(400, detail="Unsupported coin")
-    if not 0 < win_rate < 1:
-        raise HTTPException(400, detail="win_rate must be between 0 and 1")
-    if avg_win_pct <= 0 or avg_loss_pct <= 0:
-        raise HTTPException(400, detail="avg_win_pct and avg_loss_pct must be positive")
-    if account_size <= 0:
-        raise HTTPException(400, detail="account_size must be positive")
-
-    auth = get_auth_header(request)
-    require_tier(auth, db, minimum_tier="pro")
-    update_last_active(request, db)
-
-    from app.services.risk_engine import kelly_criterion
-    from app.services.market_data import build_regime_stack
-
-    stack = build_regime_stack(coin, db)
-    hazard = stack.get("hazard") or 50
-    exec_label = stack["execution"]["label"] if stack.get("execution") else "Neutral"
-
-    return kelly_criterion(
-        win_rate=win_rate,
-        avg_win_pct=avg_win_pct,
-        avg_loss_pct=avg_loss_pct,
-        account_size=account_size,
-        regime_label=exec_label,
-        hazard=hazard,
-    )
 
 
 @router.get("/kelly-criterion")

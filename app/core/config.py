@@ -46,6 +46,7 @@ class Settings:
 
     TIER_LEVELS = {
         "free": 0,
+        "expired": 0,
         "essential": 1,
         "pro": 2,
         "institutional": 3,

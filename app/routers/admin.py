@@ -1,7 +1,10 @@
 ﻿import datetime
+import logging
 from fastapi import APIRouter, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 import asyncio
+
+logger = logging.getLogger("chainpulse")
 
 from app.core.security import constant_time_compare
 from app.core.config import settings
@@ -173,7 +176,7 @@ async def run_full_update(db_factory):
      background:#000;color:#fff;padding:40px;">
   <h2 style="color:#f87171;">{priority_prefix}{len(high_alerts)} Alert{'s' if len(high_alerts) > 1 else ''}</h2>
   <div style="color:#ccc;font-size:14px;line-height:2;">{alert_text}</div>
-  <a href="{settings.FRONTEND_URL}/app?token={user.access_token or ''}"
+  <a href="{settings.FRONTEND_URL}/app"
      style="display:inline-block;background:#fff;color:#000;
             padding:14px 28px;margin-top:24px;
             text-decoration:none;font-weight:bold;border-radius:4px;">
@@ -285,11 +288,7 @@ def send_what_changed_email(
     errors = 0
     for user in pro_users:
         try:
-            url = (
-                f"{settings.FRONTEND_URL}/app?token={user.access_token}"
-                if user.access_token
-                else f"{settings.FRONTEND_URL}/app"
-            )
+            url = f"{settings.FRONTEND_URL}/app"
             email_html = f"""
 <div style="font-family:sans-serif;max-width:640px;margin:0 auto;
      background:#000;color:#fff;padding:40px;">

@@ -179,11 +179,7 @@ def morning_email_html(stacks: list, access_token: str) -> str:
     from app.utils.enums import PLAYBOOK_DATA
     from app.services.market_data import compute_regime_quality
 
-    url = (
-        f"{settings.FRONTEND_URL}/app?token={access_token}"
-        if access_token
-        else f"{settings.FRONTEND_URL}/app"
-    )
+    url = f"{settings.FRONTEND_URL}/app"
     rows = ""
     for s in stacks:
         shift_risk = s.get("shift_risk") or 0
@@ -264,11 +260,7 @@ def morning_email_html(stacks: list, access_token: str) -> str:
 def weekly_discipline_email_html(
     email: str, discipline: dict, access_token: str
 ) -> str:
-    url = (
-        f"{settings.FRONTEND_URL}/app?token={access_token}"
-        if access_token
-        else f"{settings.FRONTEND_URL}/app"
-    )
+    url = f"{settings.FRONTEND_URL}/app"
     score = discipline.get("score")
     label = discipline.get("label", "-")
     summary = discipline.get("summary", "")
@@ -359,11 +351,7 @@ def weekly_discipline_email_html(
 
 
 def onboarding_day0_html(email: str, access_token: str, stack: dict = None) -> str:
-    url = (
-        f"{settings.FRONTEND_URL}/app?token={access_token}"
-        if access_token
-        else f"{settings.FRONTEND_URL}/app"
-    )
+    url = f"{settings.FRONTEND_URL}/app"
     regime_line = ""
     directive_line = ""
     if stack and not stack.get("incomplete"):
@@ -405,11 +393,7 @@ def onboarding_day0_html(email: str, access_token: str, stack: dict = None) -> s
 
 
 def onboarding_day2_html(email: str, access_token: str) -> str:
-    url = (
-        f"{settings.FRONTEND_URL}/app?token={access_token}"
-        if access_token
-        else f"{settings.FRONTEND_URL}/app"
-    )
+    url = f"{settings.FRONTEND_URL}/app"
     return f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;
      background:#000;color:#fff;padding:40px;">
@@ -440,11 +424,7 @@ def onboarding_day2_html(email: str, access_token: str) -> str:
 
 
 def onboarding_day5_html(email: str, access_token: str) -> str:
-    url = (
-        f"{settings.FRONTEND_URL}/app?token={access_token}"
-        if access_token
-        else f"{settings.FRONTEND_URL}/app"
-    )
+    url = f"{settings.FRONTEND_URL}/app"
     return f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;
      background:#000;color:#fff;padding:40px;">
