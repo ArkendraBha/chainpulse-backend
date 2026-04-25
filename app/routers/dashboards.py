@@ -657,120 +657,35 @@ async def dashboard_v2(
     else:
         result["decision"] = None
 
-    try:
-        result["scenarios"] = await compute_scenarios(
-            coin,
-            db,
-            stack=stack,
-            setup=result.get("setup_quality"),
-        )
-    except Exception:
-        result["scenarios"] = None
+    
+    async def _damage():
+        return await compute_internal_damage(coin, db, market_data=market_data, stack=stack)
 
-    try:
-        result["internal_damage"] = await compute_internal_damage(
-            coin, db, market_data=market_data, stack=stack
-        )
-    except Exception:
-        result["internal_damage"] = None
+    async def _event_risk():
+        return compute_event_risk_overlay(coin, db, stack=stack)
 
-    try:
-        result["event_risk"] = compute_event_risk_overlay(coin, db, stack=stack)
-    except Exception:
-        result["event_risk"] = None
+    async def _transitions():
+        return regime_transition_matrix(db, coin, "1h")
 
-    try:
-        result["regime_quality"] = (
-            compute_regime_quality(stack) if not stack.get("incomplete") else None
-        )
-    except Exception:
-        result["regime_quality"] = None
+    async def _vol_env():
+        return await volatility_environment(coin, db, market_data=market_data)
 
-    try:
-        durations_list = regime_durations(db, coin, "1h")
-        if len(durations_list) >= 5:
-            durations_sorted = sorted(durations_list)
-            total = len(durations_sorted)
-            max_d = int(durations_sorted[-1])
-            curve = []
-            idx = 0
-            prev_surv = 100.0
-            for hour in range(max_d + 1):
-                while idx < total and durations_sorted[idx] <= hour:
-                    idx += 1
-                surv_pct = round(((total - idx) / total) * 100, 2)
-                hz = 0.0
-                if hour > 0 and prev_surv > 0:
-                    hz = round(((prev_surv - surv_pct) / prev_surv) * 100, 2)
-                curve.append({"hour": hour, "survival": surv_pct, "hazard": hz})
-                prev_surv = surv_pct
-            result["survival_curve"] = {"data": curve, "source": "historical"}
+    async def _correlation():
+        return await build_correlation_matrix(settings.SUPPORTED_COINS[:5])
 
-        else:
-            result["survival_curve"] = {
-                "data": [
-                    {
-                        "hour": h,
-                        "survival": max(0, 100 - h * 4),
-                        "hazard": min(100, h * 4.5),
-                    }
-                    for h in range(25)
-                ],
-                "source": "estimated",
-            }
-    except Exception:
-        result["survival_curve"] = {"data": [], "source": "error"}
-
-    try:
-        result["transitions"] = regime_transition_matrix(db, coin, "1h")
-    except Exception:
-        result["transitions"] = None
-
-    try:
-        result["volatility_env"] = await volatility_environment(
-            coin, db, market_data=market_data
-        )
-    except Exception:
-        result["volatility_env"] = None
-
-    try:
-        result["correlation"] = await build_correlation_matrix(
-            settings.SUPPORTED_COINS[:5]
-        )
-    except Exception:
-        result["correlation"] = None
-
-    try:
-        survival_val = stack.get("survival") or 50
-        coherence_val = (
-            stack["execution"]["coherence"]
-            if stack.get("execution") and stack["execution"].get("coherence")
-            else 50
-        )
-        result["confidence"] = regime_confidence_score(
-            alignment=stack.get("alignment") or 0,
-            survival=survival_val,
-            coherence=coherence_val,
-            breadth_score=breadth.get("breadth_score", 0),
-        )
-    except Exception:
-        result["confidence"] = None
-
-    try:
-        pb = PLAYBOOK_DATA.get(exec_label, PLAYBOOK_DATA["Neutral"])
-        result["playbook"] = {
-            "regime": exec_label,
-            "strategy_mode": pb["strategy_mode"],
-            "exposure_band": pb["exposure_band"],
-            "trend_follow_wr": pb["trend_follow_wr"],
-            "mean_revert_wr": pb["mean_revert_wr"],
-            "avg_remaining_days": pb["avg_remaining_days"],
-            "data_source": pb.get("data_source", "backtested_estimates"),
-            "actions": pb["actions"],
-            "avoid": pb["avoid"],
-        }
-    except Exception:
-        result["playbook"] = None
+    parallel_results = await asyncio.gather(
+        _damage(),
+        _event_risk(),
+        _transitions(),
+        _vol_env(),
+        _correlation(),
+        return_exceptions=True,
+    )
+    result["internal_damage"] = parallel_results[0] if not isinstance(parallel_results[0], Exception) else None
+    result["event_risk"] = parallel_results[1] if not isinstance(parallel_results[1], Exception) else None
+    result["transitions"] = parallel_results[2] if not isinstance(parallel_results[2], Exception) else None
+    result["volatility_env"] = parallel_results[3] if not isinstance(parallel_results[3], Exception) else None
+    result["correlation"] = parallel_results[4] if not isinstance(parallel_results[4], Exception) else None
 
     if email:
         try:
