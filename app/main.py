@@ -23,6 +23,7 @@ from app.routers import user
 from app.routers import trade
 from app.routers import webhooks as webhooks_router
 from app.routers import admin
+from app.routers import payments
 
 app = FastAPI(
     title="ChainPulse API",
@@ -65,6 +66,7 @@ app.include_router(webhooks_router.router)
 app.include_router(admin.router)
 app.include_router(streaming.router)
 app.include_router(onchain.router)
+app.include_router(payments.router)
 
 
 # Ã¢â€â‚¬Ã¢â€â‚¬ Health check Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬

@@ -1,4 +1,4 @@
-import uuid
+﻿import uuid
 import datetime
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
@@ -6,14 +6,15 @@ from app.db.models import User
 from app.auth.auth import generate_access_token, hash_token
 from app.core.config import settings
 
+
 def create_login_session(email: str, db: Session) -> dict:
     """
     Creates a login session for a user.
     Returns login URL for email.
     """
     user = db.query(User).filter(User.email == email).first()
-    if not user or user.subscription_status not in ("active", "trialing"):
-        raise HTTPException(404, detail="No active subscription found")
+    if not user:
+        raise HTTPException(404, detail="No account found for this email")
 
     # Generate new token
     raw_token = generate_access_token()
@@ -22,18 +23,19 @@ def create_login_session(email: str, db: Session) -> dict:
     db.commit()
 
     return {
-        "login_url": f"{settings.FRONTEND_URL}/app?token={raw_token}",
+        "login_url": f"{settings.FRONTEND_URL}/app?token={raw_token}&email={email}",
         "expires_in": f"{settings.TOKEN_EXPIRY_DAYS} days",
     }
+
 
 def send_login_email(email: str, db: Session) -> bool:
     """
     Sends a login link email to the user.
     """
     from app.services.emails import send_email
-    
+
     login_data = create_login_session(email, db)
-    
+
     html = f"""
 <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#000;color:#fff;padding:40px;">
   <div style="font-size:11px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:16px;">ChainPulse Login</div>
@@ -42,9 +44,9 @@ def send_login_email(email: str, db: Session) -> bool:
     Click the button below to securely access your ChainPulse dashboard.
     This link expires in {settings.TOKEN_EXPIRY_DAYS} days.
   </p>
-  <a href="{login_data['login_url']}" 
+  <a href="{login_data['login_url']}"
      style="display:inline-block;background:#10b981;color:#fff;padding:16px 32px;text-decoration:none;font-weight:bold;border-radius:12px;margin-bottom:24px;">
-    Access Dashboard ?
+    Access Dashboard →
   </a>
   <p style="color:#666;font-size:12px;">
     For security, this link only works once. Request a new one if needed.
@@ -54,9 +56,9 @@ def send_login_email(email: str, db: Session) -> bool:
   </p>
 </div>
 """
-    
+
     return send_email(
         email,
         "ChainPulse - Your Secure Login Link",
-        html
+        html,
     )
