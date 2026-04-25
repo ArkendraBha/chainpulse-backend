@@ -1,6 +1,7 @@
 ﻿import time
 import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
+import asyncio
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -60,6 +61,12 @@ async def dashboard(
     user_info = resolve_user_tier(authorization, db)
     is_pro = user_info["is_pro"]
     tier = user_info["tier"]
+
+    # Check cache first
+    cache_key = f"dashboard:{coin}:{tier}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
 
     # Core stack
     stack = build_regime_stack(coin, db)
@@ -157,53 +164,60 @@ async def dashboard(
     if is_pro:
         durations = regime_durations(db, coin, "1h")
         if len(durations) >= 5:
-            max_dur = int(max(durations))
+            durations_sorted = sorted(durations)
+            total = len(durations_sorted)
+            max_dur = int(durations_sorted[-1])
             curve = []
+            idx = 0
+            prev_surv = 100.0
             for hour in range(max_dur + 1):
-                survivors = [d for d in durations if d > hour]
-                surv_pct = (len(survivors) / len(durations)) * 100
+                while idx < total and durations_sorted[idx] <= hour:
+                    idx += 1
+                surv_pct = round(((total - idx) / total) * 100, 2)
                 hz = 0.0
-                if hour > 0 and survivors:
-                    exited = [d for d in durations if hour - 1 < d <= hour]
-                    hz = (len(exited) / len(survivors)) * 100
-                curve.append(
-                    {
-                        "hour": hour,
-                        "survival": round(surv_pct, 2),
-                        "hazard": round(hz, 2),
-                    }
-                )
+                if hour > 0 and prev_surv > 0:
+                    hz = round(((prev_surv - surv_pct) / prev_surv) * 100, 2)
+                curve.append({"hour": hour, "survival": surv_pct, "hazard": hz})
+                prev_surv = surv_pct
             curve_data = {"data": curve, "source": "historical"}
 
-        try:
-            transitions_data = regime_transition_matrix(db, coin, "1h")
-        except Exception:
-            transitions_data = None
-        try:
-            vol_env_data = await volatility_environment(coin, db)
-        except Exception:
-            vol_env_data = None
-        try:
-            correlation_data = await build_correlation_matrix(settings.SUPPORTED_COINS)
-        except Exception:
-            correlation_data = None
-        try:
-            survival_v = stack.get("survival") or 50.0
-            coherence_v = (
-                stack["execution"]["coherence"]
-                if stack.get("execution") and stack["execution"].get("coherence")
-                else 50.0
-            )
-            confidence_data = regime_confidence_score(
+        survival_v = stack.get("survival") or 50.0
+        coherence_v = (
+            stack["execution"]["coherence"]
+            if stack.get("execution") and stack["execution"].get("coherence")
+            else 50.0
+        )
+
+        async def _transitions():
+            return regime_transition_matrix(db, coin, "1h")
+
+        async def _vol_env():
+            return await volatility_environment(coin, db)
+
+        async def _correlation():
+            return await build_correlation_matrix(settings.SUPPORTED_COINS)
+
+        async def _confidence():
+            return regime_confidence_score(
                 alignment=stack.get("alignment") or 0,
                 survival=survival_v,
                 coherence=coherence_v,
                 breadth_score=breadth.get("breadth_score", 0),
             )
-        except Exception:
-            confidence_data = None
 
-    return {
+        results = await asyncio.gather(
+            _transitions(),
+            _vol_env(),
+            _correlation(),
+            _confidence(),
+            return_exceptions=True,
+        )
+        transitions_data = results[0] if not isinstance(results[0], Exception) else None
+        vol_env_data = results[1] if not isinstance(results[1], Exception) else None
+        correlation_data = results[2] if not isinstance(results[2], Exception) else None
+        confidence_data = results[3] if not isinstance(results[3], Exception) else None
+
+    response = {
         "stack": stack,
         "pro_required": not is_pro,
         "tier": tier,
@@ -234,6 +248,8 @@ async def dashboard(
         "curve": curve_data.get("data") if curve_data else [],
         "events": RISK_EVENTS,
     }
+    cache_set(cache_key, response, ttl=60)
+    return response
 
 
 @router.get("/premium-dashboard")
@@ -326,22 +342,21 @@ async def premium_dashboard(
     try:
         durations = regime_durations(db, coin, "1h")
         if len(durations) >= 5:
-            max_dur = int(max(durations))
+            durations_sorted = sorted(durations)
+            total = len(durations_sorted)
+            max_dur = int(durations_sorted[-1])
             curve = []
+            idx = 0
+            prev_surv = 100.0
             for hour in range(max_dur + 1):
-                survivors = [d for d in durations if d > hour]
-                surv_pct = (len(survivors) / len(durations)) * 100
+                while idx < total and durations_sorted[idx] <= hour:
+                    idx += 1
+                surv_pct = round(((total - idx) / total) * 100, 2)
                 hz = 0.0
-                if hour > 0 and survivors:
-                    exited = [d for d in durations if hour - 1 < d <= hour]
-                    hz = (len(exited) / len(survivors)) * 100
-                curve.append(
-                    {
-                        "hour": hour,
-                        "survival": round(surv_pct, 2),
-                        "hazard": round(hz, 2),
-                    }
-                )
+                if hour > 0 and prev_surv > 0:
+                    hz = round(((prev_surv - surv_pct) / prev_surv) * 100, 2)
+                curve.append({"hour": hour, "survival": surv_pct, "hazard": hz})
+                prev_surv = surv_pct
             survival_data = {"data": curve, "source": "historical"}
         else:
             survival_data = {
@@ -674,23 +689,23 @@ async def dashboard_v2(
     try:
         durations_list = regime_durations(db, coin, "1h")
         if len(durations_list) >= 5:
-            max_d = int(max(durations_list))
+            durations_sorted = sorted(durations_list)
+            total = len(durations_sorted)
+            max_d = int(durations_sorted[-1])
             curve = []
+            idx = 0
+            prev_surv = 100.0
             for hour in range(max_d + 1):
-                survivors = [d for d in durations_list if d > hour]
-                surv_pct = (len(survivors) / len(durations_list)) * 100
+                while idx < total and durations_sorted[idx] <= hour:
+                    idx += 1
+                surv_pct = round(((total - idx) / total) * 100, 2)
                 hz = 0.0
-                if hour > 0 and survivors:
-                    exited = [d for d in durations_list if hour - 1 < d <= hour]
-                    hz = (len(exited) / len(survivors)) * 100
-                curve.append(
-                    {
-                        "hour": hour,
-                        "survival": round(surv_pct, 2),
-                        "hazard": round(hz, 2),
-                    }
-                )
+                if hour > 0 and prev_surv > 0:
+                    hz = round(((prev_surv - surv_pct) / prev_surv) * 100, 2)
+                curve.append({"hour": hour, "survival": surv_pct, "hazard": hz})
+                prev_surv = surv_pct
             result["survival_curve"] = {"data": curve, "source": "historical"}
+
         else:
             result["survival_curve"] = {
                 "data": [
